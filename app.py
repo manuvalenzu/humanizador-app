@@ -11,10 +11,9 @@ st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wid
 try:
     MI_API_KEY = st.secrets["GEMINI_API_KEY"]
 except Exception:
-    # Si no está en los secretos, la pide en la barra lateral (para pruebas locales)
     MI_API_KEY = None
 
-# --- CSS PERSONALIZADO (Estilo Dashboard Oscuro + Firma) ---
+# --- CSS PERSONALIZADO ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:wght@600;700&display=swap');
@@ -48,12 +47,28 @@ st.markdown("""
     .sidebar-title { font-family: 'Playfair Display', serif; font-size: 1.5rem; color: #E0E0E0; font-weight: 700; line-height: 1.2; margin-bottom: 2rem; }
     .sidebar-title span { color: #D97757; font-size: 2rem; line-height: 0; }
 
-    .top-signature { position: fixed; top: 1.5rem; right: 2rem; font-family: 'Inter', sans-serif; font-size: 0.75rem; color: #555555; letter-spacing: 0.1em; text-transform: uppercase; z-index: 1000; }
+    /* FIRMA SUPERIOR DERECHA CORREGIDA */
+    .signature-container {
+        display: flex;
+        justify-content: flex-end;
+        width: 100%;
+        margin-top: -2rem; /* Ajuste para que quede bien arriba */
+        margin-bottom: 1rem;
+        padding-right: 1rem;
+    }
+    .signature-text {
+        font-family: 'Inter', sans-serif;
+        font-size: 0.65rem; /* Más pequeña */
+        color: #FFFFFF; /* Letras blancas */
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        opacity: 0.7; /* Un poco de transparencia para que no sea muy dura */
+    }
     </style>
 """, unsafe_allow_html=True)
 
 # --- FIRMA SUPERIOR DERECHA ---
-st.markdown('<div class="top-signature">Elaborado por Manu</div>', unsafe_allow_html=True)
+st.markdown('<div class="signature-container"><div class="signature-text">Elaborado por Manu</div></div>', unsafe_allow_html=True)
 
 # --- BARRA LATERAL ---
 with st.sidebar:
