@@ -23,7 +23,7 @@ st.markdown("""
     .stApp { background-color: #0F1115; font-family: 'Inter', sans-serif; }
     h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
     
-    /* AJUSTE: Subimos un poco el título principal para que no quede tan abajo */
+    /* AJUSTE: Subimos el título principal y damos espacio a la barra lateral */
     .block-container { padding-top: 1.5rem !important; }
     
     /* ESTILOS PARA LA PANTALLA DE LOGIN */
@@ -41,7 +41,7 @@ st.markdown("""
     .stTextInput>label { display: flex; justify-content: center; color: #A0A0A0 !important; }
 
     /* ESTILOS GENERALES DE LA APP */
-    .header-title { font-size: 2.2rem !important; color: #F5F5F5; margin-bottom: 0.2rem; margin-top: -1rem; } /* Subimos el título */
+    .header-title { font-size: 2.2rem !important; color: #F5F5F5; margin-bottom: 0.2rem; margin-top: -1rem; }
     .header-subtitle { font-size: 0.95rem; color: #888888; margin-bottom: 1.5rem; }
     h4 { font-family: 'Inter', sans-serif !important; color: #E0E0E0 !important; font-weight: 500 !important; font-size: 1rem !important; margin-bottom: 0.5rem !important; letter-spacing: 0.02em; }
 
@@ -66,29 +66,31 @@ st.markdown("""
     }
     .stButton>button[kind="primary"]:hover { background-color: #c56544 !important; }
 
-    [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
+    /* --- AJUSTES DE LA BARRA LATERAL --- */
+    [data-testid="stSidebar"] { 
+        background-color: #0B0D10; 
+        border-right: 1px solid #1F2228; 
+        padding-top: 1rem !important; /* Arregla el corte de letras arriba */
+    }
     
-    /* CUADRO DE MOTOR PERSONALIZADO (SIN EMOJI) */
+    /* CUADRO DE MOTOR PERSONALIZADO */
     .motor-box {
-        background-color: #1E293B; /* Fondo azul oscuro */
-        border-left: 4px solid #3B82F6; /* Borde azul */
+        background-color: #1E293B; 
+        border-left: 4px solid #3B82F6; 
         padding: 1rem;
         border-radius: 6px;
-        margin-top: 1rem;
+        margin-top: 0.5rem;
         margin-bottom: 1.5rem;
     }
     .motor-box strong { color: #E0E0E0; font-size: 0.95rem; }
     .motor-box p { color: #9CA3AF; font-size: 0.85rem; margin-top: 0.3rem; margin-bottom: 0; font-style: italic; }
 
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
-    
-    .sidebar-title { font-family: 'Playfair Display', serif; font-size: 1.5rem; color: #E0E0E0; font-weight: 700; line-height: 1.2; margin-bottom: 2rem; }
-    .sidebar-title span { color: #D97757; font-size: 2rem; line-height: 0; }
 
     .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
     .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
 
-    /* PIE DE PÁGINA (DERECHOS RESERVADOS) - EN BLANCO */
+    /* PIE DE PÁGINA (DERECHOS RESERVADOS) */
     .footer-text { text-align: center; color: #FFFFFF; opacity: 0.8; font-size: 0.85rem; margin-top: 3rem; margin-bottom: 2rem; }
 
     /* --- RESPONSIVE (MÓVILES) --- */
@@ -149,16 +151,17 @@ st.markdown('<div class="signature-container"><div class="signature-text">Elabor
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=60)
+    # 1. LOGO MÁS GRANDE (120px) Y SIN TEXTO DE "PANEL DE CONTROL"
+    st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=120)
     
-    st.markdown('<div class="sidebar-title">PANEL DE<br>CONTROL<span>.</span></div>', unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True) # Un pequeño espacio de separación
     st.markdown("### Configuración")
     
     if not MI_API_KEY:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    # CUADRO DE MOTOR PERSONALIZADO (SIN EMOJI)
+    # CUADRO DE MOTOR PERSONALIZADO
     st.markdown("""
         <div class="motor-box">
             <strong>Motor: Gemini 3.5 Flash Lite</strong>
@@ -174,7 +177,7 @@ with st.sidebar:
 st.markdown('<div class="header-title">Humanizador de Textos</div>', unsafe_allow_html=True)
 st.markdown('<div class="header-subtitle">Refina textos generados por IA para darles una voz auténticamente humana.</div>', unsafe_allow_html=True)
 
-st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues datos personales ni confidenciales.")
+st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no peges datos personales ni confidenciales.")
 
 # Inicializamos el estado del texto original y humanizado
 if "texto_original" not in st.session_state:
