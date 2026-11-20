@@ -146,10 +146,10 @@ with st.sidebar:
     
     st.markdown("#### Elige un modelo API")
     
+    # MENÚ ACTUALIZADO: Solo los 2 modelos que mejor funcionan
     opciones_modelos = {
-        "gemini-3.8-flash": "Rápido y equilibrado (Recomendado)",
-        "gemini-3.6-flash": "Excelente para textos largos y formales",
-        "gemini-3.5-flash-lite": "Ultra ligero, ideal para evadir detectores"
+        "gemini-3.5-flash-lite": "El más rápido y evade detectores (Recomendado)",
+        "gemini-3.6-flash": "Ideal para textos formales y largos"
     }
     
     modelo_seleccionado = st.selectbox(
@@ -222,7 +222,7 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # PROMPT MEJORADO (ANTI-DETECTORES)
+                    # PROMPT ANTI-DETECTORES (El que funcionó al 0%)
                     prompt_sistema = """
                     Actúa como un estudiante universitario escribiendo un ensayo de forma muy natural. Tu objetivo es reescribir el texto para que pase como 100% humano ante los detectores de IA.
                     Sigue estas reglas estrictamente:
@@ -239,7 +239,7 @@ with col_btn1:
                         contents=st.session_state["texto_original"],
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema,
-                            temperature=0.85, # Un poco más de creatividad
+                            temperature=0.85, 
                         )
                     )
                     
