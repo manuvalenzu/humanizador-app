@@ -83,7 +83,7 @@ st.markdown("""
     .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
     .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
 
-    /* --- NUEVO PIE DE PÁGINA (CON DESCARGO DE RESPONSABILIDAD) --- */
+    /* --- PIE DE PÁGINA MEJORADO --- */
     .footer-container {
         text-align: center; margin-top: 4rem; padding-top: 1.5rem;
         border-top: 1px solid #1F2228; color: #666; font-size: 0.85rem;
@@ -192,6 +192,7 @@ st.markdown('<div class="header-subtitle">Refina textos generados por IA para da
 
 st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues datos personales ni confidenciales.")
 
+# Inicializamos el estado
 if "texto_original" not in st.session_state:
     st.session_state["texto_original"] = ""
 if "texto_humanizado" not in st.session_state:
@@ -205,17 +206,24 @@ col1, col2 = st.columns(2, gap="medium")
 
 with col1:
     st.markdown("#### Texto Original")
+    # NOTA: Quitamos el max_chars para que deje pegar el texto sin problemas
     texto_original = st.text_area(
-        "Pega tu texto aquí:", value=st.session_state["texto_original"],
-        height=400, max_chars=5000, label_visibility="collapsed", key="input_original"
+        "Pega tu texto aquí:", 
+        value=st.session_state["texto_original"],
+        height=400, 
+        label_visibility="collapsed",
+        key="input_original"
     )
     st.session_state["texto_original"] = texto_original
 
 with col2:
     st.markdown("#### Texto Humanizado")
     st.text_area(
-        "Resultado:", value=st.session_state["texto_humanizado"], 
-        height=400, disabled=True, label_visibility="collapsed"
+        "Resultado:", 
+        value=st.session_state["texto_humanizado"], 
+        height=400, 
+        disabled=True, 
+        label_visibility="collapsed"
     )
 
 # --- BOTONES DE ACCIÓN ---
