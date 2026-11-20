@@ -30,14 +30,14 @@ st.markdown("""
         align-items: center;
         justify-content: center;
         text-align: center;
-        margin-top: 5vh; /* Un poco de margen superior */
-        margin-bottom: 2rem;
+        margin-top: 5vh; 
+        margin-bottom: 1.5rem;
     }
     .logo-img {
-        width: 140px; /* Tamaño controlado, no gigante */
+        width: 140px; 
         margin-bottom: 1.5rem;
-        border-radius: 20px; /* Bordes redondeados como un icono de app */
-        box-shadow: 0 0 20px rgba(0, 255, 255, 0.2); /* Brillo sutil */
+        border-radius: 20px; 
+        box-shadow: 0 0 20px rgba(0, 255, 255, 0.2); 
     }
     .login-title {
         font-size: 2rem !important;
@@ -49,7 +49,7 @@ st.markdown("""
         color: #A0A0A0;
         max-width: 400px;
         line-height: 1.5;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;
     }
 
     /* CAJA DE CONTRASEÑA */
@@ -59,11 +59,18 @@ st.markdown("""
         color: #E0E0E0 !important;
         border-radius: 8px !important;
         padding: 0.8rem !important;
-        text-align: center; /* Texto centrado */
+        text-align: center; 
     }
     .stTextInput>div>div>input:focus {
         border-color: #D97757 !important;
         box-shadow: 0 0 0 1px #D97757 !important;
+    }
+    
+    /* Etiqueta de la contraseña centrada */
+    .stTextInput>label {
+        display: flex;
+        justify-content: center;
+        color: #A0A0A0 !important;
     }
 
     /* ESTILOS GENERALES DE LA APP (Cuando ya entraste) */
@@ -115,26 +122,24 @@ def check_password():
         else:
             st.session_state["password_correct"] = False
 
-    # DISEÑO DE LA PANTALLA DE LOGIN
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
         
         # Contenedor centrado con Logo, Título e Intro
+        # NOTA: Aquí usamos el nombre exacto del archivo que tienes en GitHub (Logo.png.jpeg)
         st.markdown("""
             <div class="login-container">
-                <!-- Asegúrate de que el archivo se llame logo.png y esté en GitHub -->
-                <img src="https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png" class="logo-img" alt="Logo">
+                <img src="https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/Logo.png.jpeg" class="logo-img" alt="Logo">
                 <div class="login-title">Humanizador Pro</div>
                 <div class="login-intro">
-                    Bienvenido. Esta herramienta transforma textos generados por IA en textos naturales, auténticos y con verdadera voz humana. <br><br>
-                    Ingresa la contraseña para acceder.
+                    Bienvenido. Esta herramienta transforma textos generados por IA en textos naturales, auténticos y con verdadera voz humana.
                 </div>
             </div>
         """, unsafe_allow_html=True)
         
-        # Caja de contraseña centrada
-        col1, col2, col3 = st.columns([1, 2, 1]) # Creamos un efecto de centrado
+        # Caja de contraseña centrada con su etiqueta
+        col1, col2, col3 = st.columns([1, 2, 1]) 
         with col2:
-            st.text_input("Contraseña", type="password", on_change=password_entered, key="password", label_visibility="collapsed")
+            st.text_input("Ingresa la contraseña para acceder", type="password", on_change=password_entered, key="password")
         
         if "password_correct" in st.session_state and not st.session_state["password_correct"]:
             st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
