@@ -30,7 +30,7 @@ st.markdown("""
         align-items: center;
         justify-content: center;
         text-align: center;
-        margin-top: 5vh; 
+        margin-top: 2vh; 
         margin-bottom: 1rem;
     }
     .login-title {
@@ -68,7 +68,7 @@ st.markdown("""
         color: #A0A0A0 !important;
     }
 
-    /* ESTILOS GENERALES DE LA APP (Cuando ya entraste) */
+    /* ESTILOS GENERALES DE LA APP */
     .header-title { font-size: 2.2rem !important; color: #F5F5F5; margin-bottom: 0.2rem; }
     .header-subtitle { font-size: 0.95rem; color: #888888; margin-bottom: 2rem; }
     h4 { font-family: 'Inter', sans-serif !important; color: #E0E0E0 !important; font-weight: 500 !important; font-size: 1rem !important; margin-bottom: 0.5rem !important; letter-spacing: 0.02em; }
@@ -119,13 +119,13 @@ def check_password():
 
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
         
-        # 1. Mostramos el Logo con la función nativa de Streamlit (Más confiable)
-        # Usamos el nombre exacto del archivo que vimos en tu GitHub
+        # 1. MOSTRAMOS EL LOGO CON LA URL RAW EXACTA
         col_logo1, col_logo2, col_logo3 = st.columns([1, 1, 1])
         with col_logo2:
-            st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/Logo.png.jpeg", use_container_width=True)
+            url_logo = "https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png"
+            st.image(url_logo, use_container_width=True)
 
-        # 2. Mostramos el Título e Intro
+        # 2. TÍTULO E INTRO
         st.markdown("""
             <div class="login-container">
                 <div class="login-title">Humanizador Pro</div>
@@ -135,7 +135,7 @@ def check_password():
             </div>
         """, unsafe_allow_html=True)
         
-        # 3. Caja de contraseña centrada con su etiqueta
+        # 3. CAJA DE CONTRASEÑA
         col1, col2, col3 = st.columns([1, 2, 1]) 
         with col2:
             st.text_input("Ingresa la contraseña para acceder", type="password", on_change=password_entered, key="password")
