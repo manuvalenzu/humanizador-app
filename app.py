@@ -75,7 +75,7 @@ st.markdown("""
     .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
 
     /* PIE DE PÁGINA (DERECHOS RESERVADOS) */
-    .footer-text { text-align: center; color: #666; font-size: 0.8rem; margin-top: 5rem; margin-bottom: 2rem; }
+    .footer-text { text-align: center; color: #666; font-size: 0.8rem; margin-top: 3rem; margin-bottom: 2rem; }
 
     /* --- RESPONSIVE (MÓVILES) --- */
     @media (max-width: 768px) {
@@ -97,17 +97,13 @@ def check_password():
 
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
         
-        # Columnas para centrar absolutamente todo el bloque de login
         col_izq, col_centro, col_der = st.columns([1, 2, 1])
         
         with col_centro:
-            # 1. LOGO CENTRADO (Usamos columnas internas para que quede en el medio exacto)
             col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
             with col_logo_centro:
-                # Tamaño aumentado a 130px
                 st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", use_container_width=True)
             
-            # 2. TÍTULO E INTRO
             st.markdown("""
                 <div class="login-title">Humanizador Pro</div>
                 <div class="login-intro">
@@ -115,14 +111,12 @@ def check_password():
                 </div>
             """, unsafe_allow_html=True)
             
-            # 3. CAJA DE CONTRASEÑA Y BOTÓN
             st.text_input("Ingresa la contraseña para acceder", type="password", key="password_input")
             st.button("Ingresar", on_click=verify_password, use_container_width=True, type="primary")
             
             if "password_correct" in st.session_state and not st.session_state["password_correct"]:
                 st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
 
-        # 4. PIE DE PÁGINA CON EL SÍMBOLO ®
         st.markdown('<div class="footer-text">®Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
             
         return False
@@ -177,64 +171,96 @@ st.markdown('<div class="header-subtitle">Refina textos generados por IA para da
 
 st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues datos personales ni confidenciales.")
 
+# Inicializamos el estado del texto original y humanizado
+if "texto_original" not in st.session_state:
+    st.session_state["texto_original"] = ""
+if "texto_humanizado" not in st.session_state:
+    st.session_state["texto_humanizado"] = ""
+
+# Función para limpiar los textos
+def limpiar_textos():
+    st.session_state["texto_original"] = ""
+    st.session_state["texto_humanizado"] = ""
+
 col1, col2 = st.columns(2, gap="medium")
 
 with col1:
     st.markdown("#### Texto Original")
-    texto_original = st.text_area("Pega tu texto aquí:", height=400, max_chars=5000, label_visibility="collapsed")
+    texto_original = st.text_area(
+        "Pega tu texto aquí:", 
+        value=st.session_state["texto_original"],
+        height=400, 
+        max_chars=5000, 
+        label_visibility="collapsed",
+        key="input_original"
+    )
+    # Guardamos lo que escribe el usuario en el estado
+    st.session_state["texto_original"] = texto_original
 
 with col2:
     st.markdown("#### Texto Humanizado")
-    if "texto_humanizado" not in st.session_state:
-        st.session_state["texto_humanizado"] = ""
-    
-    st.text_area("Resultado:", value=st.session_state["texto_humanizado"], height=400, disabled=True, label_visibility="collapsed")
+    st.text_area(
+        "Resultado:", 
+        value=st.session_state["texto_humanizado"], 
+        height=400, 
+        disabled=True, 
+        label_visibility="collapsed"
+    )
 
-# --- BOTÓN DE ACCIÓN ---
+# --- BOTONES DE ACCIÓN ---
 st.markdown("<br>", unsafe_allow_html=True) 
-if st.button("Refinar Texto", use_container_width=True, type="primary"):
-    if not texto_original.strip():
-        st.warning("Por favor, pega un texto primero.")
-    elif not MI_API_KEY:
-        st.error("⚠️ Falta la API Key.")
-    else:
-        with st.spinner("Aplicando reglas editoriales..."):
-            try:
-                client = genai.Client(api_key=MI_API_KEY)
-                
-                prompt_sistema = """
-                Eres un editor humano experto. Tu tarea es reescribir el texto para que suene 100% natural y humano, adaptándote al tipo de texto que recibas.
-                
-                REGLAS GENERALES:
-                1. Elimina conectores robóticos: "En primera instancia", "Adicionalmente", "En conclusión", "Cabe destacar".
-                2. Cambia el verbo ser rebuscado ("se erige como", "constituye") por "es", "tiene".
-                3. Rompe la regla de tres.
-                4. Varía el ritmo: mezcla frases cortas y largas.
-                5. NO cambies datos, cifras ni nombres.
-                6. Devuelve SOLO el texto final.
 
-                REGLAS SEGÚN EL TIPO DE TEXTO:
-                - Si es un ENSAYO ACADÉMICO o texto formal: Mantén un tono serio, profesional y culto. NO uses coloquialismos como "Ojo", "Spoiler", "Onda", ni uses paréntesis informales. El "ruido humano" debe ser académico (ej. "En mi opinión...", "Resulta interesante notar que...").
-                - Si es un texto informal, blog o redes sociales: Inyecta "ruido humano" coloquial (paréntesis, primera persona, micro-dudas).
-                """
-                
-                response = client.models.generate_content(
-                    model=modelo_seleccionado,
-                    contents=texto_original,
-                    config=types.GenerateContentConfig(
-                        system_instruction=prompt_sistema,
-                        temperature=0.7,
+# Creamos dos columnas para los botones (Refinar y Limpiar)
+col_btn1, col_btn2 = st.columns([3, 1])
+
+with col_btn1:
+    if st.button("Refinar Texto", use_container_width=True, type="primary"):
+        if not st.session_state["texto_original"].strip():
+            st.warning("Por favor, pega un texto primero.")
+        elif not MI_API_KEY:
+            st.error("⚠️ Falta la API Key.")
+        else:
+            with st.spinner("Aplicando reglas editoriales..."):
+                try:
+                    client = genai.Client(api_key=MI_API_KEY)
+                    
+                    prompt_sistema = """
+                    Eres un editor humano experto. Tu tarea es reescribir el texto para que suene 100% natural y humano, adaptándote al tipo de texto que recibas.
+                    
+                    REGLAS GENERALES:
+                    1. Elimina conectores robóticos: "En primera instancia", "Adicionalmente", "En conclusión", "Cabe destacar".
+                    2. Cambia el verbo ser rebuscado ("se erige como", "constituye") por "es", "tiene".
+                    3. Rompe la regla de tres.
+                    4. Varía el ritmo: mezcla frases cortas y largas.
+                    5. NO cambies datos, cifras ni nombres.
+                    6. Devuelve SOLO el texto final.
+
+                    REGLAS SEGÚN EL TIPO DE TEXTO:
+                    - Si es un ENSAYO ACADÉMICO o texto formal: Mantén un tono serio, profesional y culto. NO uses coloquialismos como "Ojo", "Spoiler", "Onda", ni uses paréntesis informales. El "ruido humano" debe ser académico (ej. "En mi opinión...", "Resulta interesante notar que...").
+                    - Si es un texto informal, blog o redes sociales: Inyecta "ruido humano" coloquial (paréntesis, primera persona, micro-dudas).
+                    """
+                    
+                    response = client.models.generate_content(
+                        model=modelo_seleccionado,
+                        contents=st.session_state["texto_original"],
+                        config=types.GenerateContentConfig(
+                            system_instruction=prompt_sistema,
+                            temperature=0.7,
+                        )
                     )
-                )
-                
-                st.session_state["texto_humanizado"] = response.text
-                st.rerun() 
-                
-            except Exception as e:
-                st.error("Ocurrió un error al procesar el texto. Revisa tu conexión o intenta con otro modelo.")
-                print(f"Error técnico: {e}")
+                    
+                    st.session_state["texto_humanizado"] = response.text
+                    st.rerun() 
+                    
+                except Exception as e:
+                    st.error("Ocurrió un error al procesar el texto. Revisa tu conexión o intenta con otro modelo.")
+                    print(f"Error técnico: {e}")
 
-# --- BOTÓN DE COPIAR ---
+with col_btn2:
+    # BOTÓN PARA LIMPIAR LOS TEXTOS
+    st.button("Limpiar Textos", on_click=limpiar_textos, use_container_width=True)
+
+# --- BOTÓN DE COPIAR (ALTURA CORREGIDA) ---
 if st.session_state["texto_humanizado"]:
     texto_json = json.dumps(st.session_state["texto_humanizado"])
     components.html(
@@ -242,7 +268,7 @@ if st.session_state["texto_humanizado"]:
         <button id="copyBtn" style="
             background-color: transparent; border: 1px solid #D97757; color: #D97757;
             padding: 10px 16px; border-radius: 6px; cursor: pointer;
-            font-family: 'Inter', sans-serif; font-size: 0.95rem; width: 100%; margin-top: 10px;
+            font-family: 'Inter', sans-serif; font-size: 0.95rem; width: 100%; 
             transition: all 0.2s ease;
         ">📋 Copiar Texto Humanizado</button>
         <script>
@@ -261,7 +287,7 @@ if st.session_state["texto_humanizado"]:
         }});
         </script>
         """,
-        height=60,
+        height=70, # AUMENTAMOS LA ALTURA DEL CONTENEDOR A 70px
     )
 
 # --- PIE DE PÁGINA (DERECHOS RESERVADOS) ---
