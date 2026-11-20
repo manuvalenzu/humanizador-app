@@ -181,10 +181,10 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    # NUEVO SELECTOR DE TONO
+    # NUEVO SELECTOR DE TONO (3 OPCIONES)
     tono_seleccionado = st.radio(
         "Selecciona el tono del texto:",
-        ["Académico Formal", "Humano Natural"]
+        ["Estudiante Universitario", "Académico Formal", "Humano Natural"]
     )
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -245,7 +245,7 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # DEPENDIENDO DEL TONO, USAMOS UN PROMPT U OTRO
+                    # PROMPTS DEPENDIENDO DEL TONO
                     if tono_seleccionado == "Académico Formal":
                         prompt_sistema = """
                         Actúa como un redactor humano experto. Reescribe el texto manteniendo un tono académico y profesional (ideal para la universidad).
@@ -258,7 +258,7 @@ with col_btn1:
                         6. Mantén EXACTAMENTE los mismos datos, cifras y nombres.
                         7. Devuelve SOLO el texto final.
                         """
-                    else:
+                    elif tono_seleccionado == "Humano Natural":
                         prompt_sistema = """
                         Actúa como un estudiante universitario escribiendo en un foro. Tu objetivo es reescribir el texto para que pase como 100% humano ante los detectores de IA.
                         Reglas:
@@ -270,12 +270,24 @@ with col_btn1:
                         6. Mantén EXACTAMENTE los mismos datos, cifras y nombres.
                         7. Devuelve SOLO el texto final.
                         """
+                    else:
+                        # TONO ESTUDIANTE UNIVERSITARIO (EL PUNTO MEDIO PERFECTO)
+                        prompt_sistema = """
+                        Actúa como un estudiante universitario avanzado. Reescribe el texto para que suene como un ensayo humano bien redactado, con un vocabulario académico y rico, pero con la naturalidad suficiente para evadir detectores de IA (como ZeroGPT).
+                        Reglas estrictas:
+                        1. Estructura irregular: mezcla párrafos cortos con otros un poco más largos. No uses conectores robóticos como "En primera instancia", "Adicionalmente", "En conclusión", "Cabe destacar", "Se erige como".
+                        2. Vocabulario académico: usa palabras cultas y formales (ej. "no obstante", "asimismo", "en este sentido"), pero NUNCA uses jerga coloquial como "chamba", "patito", "rollo" o "bronca".
+                        3. Ruido humano académico: introduce alguna pregunta retórica reflexiva (ej. "¿cómo se explica esto?"), usa paréntesis para aclaraciones conceptuales, y usa la primera persona del plural (ej. "como sociedad", "nos lleva a pensar").
+                        4. Puntuación variada: usa puntos suspensivos (...) y guiones (-) para romper la linealidad perfecta del texto.
+                        5. Mantén EXACTAMENTE los mismos datos, cifras, nombres y hechos del texto original. No inventes información nueva.
+                        6. Devuelve SOLO el texto final, sin saludos ni explicaciones.
+                        """
                     
                     response = client.models.generate_content(
                         model="gemini-3.5-flash-lite", 
                         contents=texto_original,
                         config=types.GenerateContentConfig(
-                            system_instruction=prompt_sistema, temperature=0.9, 
+                            system_instruction=prompt_sistema, temperature=0.85, 
                         )
                     )
                     
