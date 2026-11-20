@@ -23,8 +23,15 @@ st.markdown("""
     .stApp { background-color: #0F1115; font-family: 'Inter', sans-serif; }
     h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
     
-    /* AJUSTE: Subimos el título principal y damos espacio a la barra lateral */
-    .block-container { padding-top: 1.5rem !important; }
+    /* --- SOLUCIÓN DEFINITIVA AL CORTE SUPERIOR --- */
+    /* Ocultamos la barra superior negra de Streamlit */
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
+    /* Ajustamos el margen superior para que el contenido respire */
+    .block-container { 
+        padding-top: 2rem !important; 
+    }
     
     /* ESTILOS PARA LA PANTALLA DE LOGIN */
     .login-title { font-size: 2rem !important; color: #F5F5F5; text-align: center; margin-bottom: 0.5rem; margin-top: 1rem; }
@@ -70,7 +77,6 @@ st.markdown("""
     [data-testid="stSidebar"] { 
         background-color: #0B0D10; 
         border-right: 1px solid #1F2228; 
-        padding-top: 1rem !important; /* Arregla el corte de letras arriba */
     }
     
     /* CUADRO DE MOTOR PERSONALIZADO */
@@ -151,10 +157,15 @@ st.markdown('<div class="signature-container"><div class="signature-text">Elabor
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    # 1. LOGO MÁS GRANDE (120px) Y SIN TEXTO DE "PANEL DE CONTROL"
-    st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=120)
+    st.markdown("<br>", unsafe_allow_html=True) # Espacio inicial
     
-    st.markdown("<br>", unsafe_allow_html=True) # Un pequeño espacio de separación
+    # Centramos el logo usando columnas para que quede en el medio de la barra lateral
+    col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 2, 1])
+    with col_logo_centro:
+        # Logo más grande (140px)
+        st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=140)
+    
+    st.markdown("<br>", unsafe_allow_html=True) 
     st.markdown("### Configuración")
     
     if not MI_API_KEY:
@@ -177,7 +188,7 @@ with st.sidebar:
 st.markdown('<div class="header-title">Humanizador de Textos</div>', unsafe_allow_html=True)
 st.markdown('<div class="header-subtitle">Refina textos generados por IA para darles una voz auténticamente humana.</div>', unsafe_allow_html=True)
 
-st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no peges datos personales ni confidenciales.")
+st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues datos personales ni confidenciales.")
 
 # Inicializamos el estado del texto original y humanizado
 if "texto_original" not in st.session_state:
