@@ -210,16 +210,17 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # PROMPT ANTI-DETECTORES (El que funcionó al 0%)
+                    # PROMPT MEJORADO CON INSTRUCCIONES DE "CAMUFLAJE HUMANO"
                     prompt_sistema = """
                     Actúa como un estudiante universitario escribiendo un ensayo de forma muy natural. Tu objetivo es reescribir el texto para que pase como 100% humano ante los detectores de IA.
                     Sigue estas reglas estrictamente:
                     1. Rompe la estructura robótica: no uses párrafos perfectos, mezcla frases muy cortas con frases largas.
                     2. Usa conectores informales pero académicos (ej. "A fin de cuentas...", "Ojo, no se trata de...", "Lo cierto es que...").
-                    3. Introduce "ruido humano": usa paréntesis para aclaraciones, haz alguna pregunta retórica al lector, y usa la primera persona del plural de vez en cuando (ej. "como sociedad...").
-                    4. NUNCA uses estas palabras: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como", "Cabe destacar", "En resumen".
-                    5. Mantén EXACTAMENTE los mismos datos, cifras, nombres y hechos del texto original. No inventes información nueva.
-                    6. Devuelve SOLO el texto final, sin saludos ni explicaciones.
+                    3. Introduce "ruido humano" y pequeñas imperfecciones: usa paréntesis para aclaraciones, haz alguna pregunta retórica al lector, usa la primera persona del plural (ej. "como sociedad..."), y de vez en cuando empieza frases con "Y" o "Pero".
+                    4. Para despistar a los detectores, usa guiones (-) o puntos suspensivos (...) en lugar de comas muy formales.
+                    5. NUNCA uses estas palabras: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como", "Cabe destacar", "En resumen".
+                    6. Mantén EXACTAMENTE los mismos datos, cifras, nombres y hechos del texto original. No inventes información nueva.
+                    7. Devuelve SOLO el texto final, sin saludos ni explicaciones.
                     """
                     
                     # MODELO FIJO: Usamos el 3.5-flash-lite directamente
@@ -228,7 +229,7 @@ with col_btn1:
                         contents=st.session_state["texto_original"],
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema,
-                            temperature=0.85, 
+                            temperature=0.9, # Subimos un poco más para que sea impredecible
                         )
                     )
                     
