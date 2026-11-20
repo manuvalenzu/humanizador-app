@@ -23,8 +23,16 @@ st.markdown("""
     .stApp { background-color: #0F1115; font-family: 'Inter', sans-serif; }
     h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
     
-    /* --- SOLUCIÓN DEFINITIVA AL CORTE SUPERIOR --- */
-    header[data-testid="stHeader"] { display: none !important; }
+    /* --- ARREGLO PARA QUE EL BOTÓN DE ABRIR LA BARRA LATERAL SE VEA SIEMPRE --- */
+    [data-testid="collapsedControl"] {
+        display: block !important;
+        color: #D97757 !important; /* Color naranja para que resalte */
+        background-color: #1E293B !important;
+        border-radius: 50% !important;
+        padding: 5px !important;
+    }
+
+    /* Ajustamos el margen superior para que el contenido respire */
     .block-container { padding-top: 2rem !important; }
     
     /* ESTILOS PARA LA PANTALLA DE LOGIN */
@@ -83,7 +91,7 @@ st.markdown("""
     .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
     .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
 
-    /* --- PIE DE PÁGINA MEJORADO --- */
+    /* --- PIE DE PÁGINA --- */
     .footer-container {
         text-align: center; margin-top: 4rem; padding-top: 1.5rem;
         border-top: 1px solid #1F2228; color: #666; font-size: 0.85rem;
@@ -164,9 +172,10 @@ st.markdown('<div class="signature-container"><div class="signature-text">Elabor
 with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True) 
     
-    col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 2, 1])
+    # LOGO ARREGLADO: Lo centramos mejor con columnas [1, 1, 1] y un tamaño de 100px
+    col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
     with col_logo_centro:
-        st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=140)
+        st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=100)
     
     st.markdown("<br>", unsafe_allow_html=True) 
     st.markdown("### Configuración")
@@ -198,15 +207,18 @@ if "texto_original" not in st.session_state:
 if "texto_humanizado" not in st.session_state:
     st.session_state["texto_humanizado"] = ""
 
+# FUNCIÓN DE LIMPIAR ARREGLADA
 def limpiar_textos():
     st.session_state["texto_original"] = ""
     st.session_state["texto_humanizado"] = ""
+    # Forzamos a Streamlit a actualizar el valor del cuadro de texto
+    st.session_state["input_original"] = "" 
 
 col1, col2 = st.columns(2, gap="medium")
 
 with col1:
     st.markdown("#### Texto Original")
-    # NOTA: Quitamos el max_chars para que deje pegar el texto sin problemas
+    # Usamos "key" para que Streamlit sepa que este cuadro es el que se debe limpiar
     texto_original = st.text_area(
         "Pega tu texto aquí:", 
         value=st.session_state["texto_original"],
@@ -214,7 +226,6 @@ with col1:
         label_visibility="collapsed",
         key="input_original"
     )
-    st.session_state["texto_original"] = texto_original
 
 with col2:
     st.markdown("#### Texto Humanizado")
@@ -233,7 +244,7 @@ col_btn1, col_btn2 = st.columns([3, 1])
 
 with col_btn1:
     if st.button("Refinar Texto", use_container_width=True, type="primary"):
-        if not st.session_state["texto_original"].strip():
+        if not texto_original.strip():
             st.warning("Por favor, pega un texto primero.")
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key.")
@@ -256,7 +267,7 @@ with col_btn1:
                     
                     response = client.models.generate_content(
                         model="gemini-3.5-flash-lite", 
-                        contents=st.session_state["texto_original"],
+                        contents=texto_original,
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema, temperature=0.9, 
                         )
@@ -270,6 +281,7 @@ with col_btn1:
                     print(f"Error técnico: {e}")
 
 with col_btn2:
+    # El botón ahora sí borra los dos
     st.button("Limpiar Textos", on_click=limpiar_textos, use_container_width=True)
 
 # --- BOTÓN DE COPIAR ---
@@ -302,7 +314,7 @@ if st.session_state["texto_humanizado"]:
         height=70, 
     )
 
-# --- NUEVO PIE DE PÁGINA PRINCIPAL ---
+# --- PIE DE PÁGINA PRINCIPAL ---
 st.markdown("""
     <div class="footer-container">
         <div class="footer-disclaimer">
