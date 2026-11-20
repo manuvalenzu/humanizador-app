@@ -83,13 +83,18 @@ st.markdown("""
     .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
     .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
 
-    /* --- PIE DE PÁGINA MEJORADO (OPCIÓN 1) --- */
+    /* --- NUEVO PIE DE PÁGINA (CON DESCARGO DE RESPONSABILIDAD) --- */
     .footer-container {
-        text-align: center; margin-top: 4rem; padding-top: 1rem;
-        border-top: 1px solid #1F2228; color: #666; font-size: 0.8rem;
+        text-align: center; margin-top: 4rem; padding-top: 1.5rem;
+        border-top: 1px solid #1F2228; color: #666; font-size: 0.85rem;
     }
-    .footer-links { color: #888; text-decoration: none; margin: 0 10px; cursor: pointer; }
-    .footer-links:hover { color: #D97757; }
+    .footer-disclaimer {
+        max-width: 800px; margin: 0 auto 1rem auto;
+        color: #888; font-size: 0.8rem; line-height: 1.5; font-style: italic;
+    }
+    .footer-copyright {
+        color: #FFFFFF; opacity: 0.8; font-size: 0.8rem;
+    }
 
     /* --- RESPONSIVE (MÓVILES) --- */
     @media (max-width: 768px) {
@@ -134,12 +139,10 @@ def check_password():
         # Footer para la pantalla de Login
         st.markdown("""
             <div class="footer-container">
-                <div style="margin-bottom: 0.5rem;">
-                    <span class="footer-links">Términos y Condiciones</span> | 
-                    <span class="footer-links">Privacidad</span> | 
-                    <span class="footer-links">Contacto</span>
+                <div class="footer-disclaimer">
+                    Humanizador Pro es una herramienta de apoyo diseñada para optimizar y pulir la redacción de textos. Los resultados generados deben ser revisados y validados por el usuario, quien asume la responsabilidad total sobre el contenido final y el uso que le dé.
                 </div>
-                <div>®Humanizadormanu derechos reservados © 2026</div>
+                <div class="footer-copyright">®Humanizadormanu derechos reservados © 2026</div>
             </div>
         """, unsafe_allow_html=True)
             
@@ -291,14 +294,12 @@ if st.session_state["texto_humanizado"]:
         height=70, 
     )
 
-# --- PIE DE PÁGINA MEJORADO (OPCIÓN 1) ---
+# --- NUEVO PIE DE PÁGINA PRINCIPAL ---
 st.markdown("""
     <div class="footer-container">
-        <div style="margin-bottom: 0.5rem;">
-            <span class="footer-links">Términos y Condiciones</span> | 
-            <span class="footer-links">Privacidad</span> | 
-            <span class="footer-links">Contacto</span>
+        <div class="footer-disclaimer">
+            Humanizador Pro es una herramienta de apoyo diseñada para optimizar y pulir la redacción de textos. Los resultados generados deben ser revisados y validados por el usuario, quien asume la responsabilidad total sobre el contenido final y el uso que le dé.
         </div>
-        <div>®Humanizadormanu derechos reservados © 2026</div>
+        <div class="footer-copyright">®Humanizadormanu derechos reservados © 2026</div>
     </div>
 """, unsafe_allow_html=True)
