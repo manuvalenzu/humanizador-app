@@ -1,6 +1,8 @@
 import streamlit as st
 from google import genai
+from google.genai import types
 import streamlit.components.v1 as components
+import json
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wide")
@@ -12,6 +14,31 @@ try:
     MI_API_KEY = st.secrets["GEMINI_API_KEY"]
 except Exception:
     MI_API_KEY = None
+
+# --- 1. SEGURIDAD: CONTRASEÑA DE ACCESO ---
+# Esta función bloquea la app hasta que se ingrese la contraseña correcta.
+def check_password():
+    def password_entered():
+        # Compara la contraseña con la que guardaste en Streamlit Secrets
+        if st.session_state["password"] == st.secrets.get("APP_PASSWORD", "manu2026"):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Borrar por seguridad
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("🔒 Ingresa la contraseña para usar la app", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("🔒 Ingresa la contraseña para usar la app", type="password", on_change=password_entered, key="password")
+        st.error("😕 Contraseña incorrecta")
+        return False
+    else:
+        return True
+
+# Si la contraseña no es correcta, detiene la ejecución aquí y no muestra nada más
+if not check_password():
+    st.stop()
 
 # --- CSS PERSONALIZADO ---
 st.markdown("""
@@ -43,7 +70,9 @@ st.markdown("""
     [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
     .stSelectbox [data-baseweb="select"] { background-color: #16181D !important; border: 1px solid #2A2D35 !important; color: #E0E0E0 !important; border-radius: 6px !important; }
 
-    #MainMenu {visibility: hidden;} header {visibility: hidden;} footer {visibility: hidden;}
+    /* HALLZGO 10 CORREGIDO: Quitamos "header" para que el menú de las 3 rayitas se vea en móviles */
+    #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
+    
     .sidebar-title { font-family: 'Playfair Display', serif; font-size: 1.5rem; color: #E0E0E0; font-weight: 700; line-height: 1.2; margin-bottom: 2rem; }
     .sidebar-title span { color: #D97757; font-size: 2rem; line-height: 0; }
 
@@ -52,17 +81,17 @@ st.markdown("""
         display: flex;
         justify-content: flex-end;
         width: 100%;
-        margin-top: -2rem; /* Ajuste para que quede bien arriba */
+        margin-top: -2rem; 
         margin-bottom: 1rem;
         padding-right: 1rem;
     }
     .signature-text {
         font-family: 'Inter', sans-serif;
-        font-size: 0.65rem; /* Más pequeña */
-        color: #FFFFFF; /* Letras blancas */
+        font-size: 0.65rem; 
+        color: #FFFFFF; 
         letter-spacing: 0.1em;
         text-transform: uppercase;
-        opacity: 0.7; /* Un poco de transparencia para que no sea muy dura */
+        opacity: 0.7; 
     }
     </style>
 """, unsafe_allow_html=True)
@@ -79,7 +108,8 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit o ingrésala aquí abajo.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     else:
-        st.success("✅ Clave API cargada desde los secretos de Streamlit.")
+        # HALLAZGO 3: Borramos el mensaje st.success que avisaba que la clave estaba cargada
+        pass
     
     modelo = st.selectbox(
         "Modelo",
@@ -97,12 +127,16 @@ col1, col2 = st.columns(2, gap="medium")
 
 with col1:
     st.markdown("#### Texto Original")
-    texto_original = st.text_area("Pega tu texto aquí:", height=400, label_visibility="collapsed")
+    # HALLAZGO 2: Agregamos max_chars=5000
+    texto_original = st.text_area("Pega tu texto aquí:", height=400, max_chars=5000, label_visibility="collapsed")
 
 with col2:
     st.markdown("#### Texto Humanizado")
-    resultado_container = st.empty()
-    resultado_container.text_area("Resultado:", height=400, disabled=True, label_visibility="collapsed")
+    # Mantenemos el área de texto vacía inicialmente, pero usamos session_state para guardar el resultado
+    if "texto_humanizado" not in st.session_state:
+        st.session_state["texto_humanizado"] = ""
+    
+    st.text_area("Resultado:", value=st.session_state["texto_humanizado"], height=400, disabled=True, label_visibility="collapsed")
 
 # --- BOTÓN DE ACCIÓN ---
 st.markdown("<br>", unsafe_allow_html=True) 
@@ -116,6 +150,7 @@ if st.button("Refinar Texto", use_container_width=True):
             try:
                 client = genai.Client(api_key=MI_API_KEY)
                 
+                # HALLAZGO 7: Pasamos las reglas por system_instruction para mayor seguridad
                 prompt_sistema = """
                 Eres un editor humano experto. Reescribe el texto para que suene 100% natural.
                 REGLAS:
@@ -130,35 +165,42 @@ if st.button("Refinar Texto", use_container_width=True):
                 
                 response = client.models.generate_content(
                     model=modelo,
-                    contents=f"{prompt_sistema}\n\nHumaniza este texto:\n\n{texto_original}"
+                    contents=texto_original, # El texto va por separado
+                    config=types.GenerateContentConfig(
+                        system_instruction=prompt_sistema, # Las reglas van aquí
+                        temperature=0.7,
+                    )
                 )
                 
-                texto_final = response.text
-                
-                resultado_container.text_area("Resultado:", value=texto_final, height=400, disabled=False, label_visibility="collapsed")
-                st.success("Texto humanizado exitosamente.")
-                
-                # --- BOTÓN DE COPIAR ---
-                components.html(
-                    f"""
-                    <button id="copyBtn" style="
-                        background-color: transparent; border: 1px solid #D97757; color: #D97757;
-                        padding: 8px 16px; border-radius: 6px; cursor: pointer;
-                        font-family: 'Inter', sans-serif; font-size: 0.9rem; width: 100%; margin-top: 10px;
-                    ">📋 Copiar Texto Humanizado</button>
-                    <script>
-                    document.getElementById('copyBtn').addEventListener('click', function() {{
-                        const text = `{texto_final.replace('`', '\\`')}`;
-                        navigator.clipboard.writeText(text).then(function() {{
-                            document.getElementById('copyBtn').innerHTML = '✅ ¡Copiado!';
-                            setTimeout(() => {{ document.getElementById('copyBtn').innerHTML = '📋 Copiar Texto Humanizado'; }}, 2000);
-                        }});
-                    }});
-                    </script>
-                    """,
-                    height=60,
-                )
+                st.session_state["texto_humanizado"] = response.text
+                st.rerun() # Recarga la página para mostrar el resultado en el área de texto
                 
             except Exception as e:
-                st.error(f"Error: {e}")
-                st.info("Si el error es 503, el servidor de Google está saturado. Intenta con otro modelo.")
+                # HALLAZGO 8: Error simple en español
+                st.error("Ocurrió un error al procesar el texto. Revisa tu conexión o intenta con otro modelo.")
+                print(f"Error técnico: {e}") # El detalle queda en los logs ocultos
+
+# --- BOTÓN DE COPIAR ---
+# HALLAZGO 4: Corregido con json.dumps para evitar que el texto rompa el JavaScript
+if st.session_state["texto_humanizado"]:
+    texto_json = json.dumps(st.session_state["texto_humanizado"])
+    components.html(
+        f"""
+        <button id="copyBtn" style="
+            background-color: transparent; border: 1px solid #D97757; color: #D97757;
+            padding: 8px 16px; border-radius: 6px; cursor: pointer;
+            font-family: 'Inter', sans-serif; font-size: 0.9rem; width: 100%; margin-top: 10px;
+        ">📋 Copiar Texto Humanizado</button>
+        <script>
+        document.getElementById('copyBtn').addEventListener('click', function() {{
+            // Usamos json.dumps desde Python para escapar correctamente el texto
+            const text = {texto_json};
+            navigator.clipboard.writeText(text).then(function() {{
+                document.getElementById('copyBtn').innerHTML = '✅ ¡Copiado!';
+                setTimeout(() => {{ document.getElementById('copyBtn').innerHTML = '📋 Copiar Texto Humanizado'; }}, 2000);
+            }});
+        }});
+        </script>
+        """,
+        height=60,
+    )
