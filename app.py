@@ -31,18 +31,13 @@ st.markdown("""
         justify-content: center;
         text-align: center;
         margin-top: 5vh; 
-        margin-bottom: 1.5rem;
-    }
-    .logo-img {
-        width: 140px; 
-        margin-bottom: 1.5rem;
-        border-radius: 20px; 
-        box-shadow: 0 0 20px rgba(0, 255, 255, 0.2); 
+        margin-bottom: 1rem;
     }
     .login-title {
         font-size: 2rem !important;
         color: #F5F5F5;
         margin-bottom: 0.5rem;
+        margin-top: 1rem;
     }
     .login-intro {
         font-size: 1rem;
@@ -124,11 +119,15 @@ def check_password():
 
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
         
-        # Contenedor centrado con Logo, Título e Intro
-        # NOTA: Aquí usamos el nombre exacto del archivo que tienes en GitHub (Logo.png.jpeg)
+        # 1. Mostramos el Logo con la función nativa de Streamlit (Más confiable)
+        # Usamos el nombre exacto del archivo que vimos en tu GitHub
+        col_logo1, col_logo2, col_logo3 = st.columns([1, 1, 1])
+        with col_logo2:
+            st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/Logo.png.jpeg", use_container_width=True)
+
+        # 2. Mostramos el Título e Intro
         st.markdown("""
             <div class="login-container">
-                <img src="https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/Logo.png.jpeg" class="logo-img" alt="Logo">
                 <div class="login-title">Humanizador Pro</div>
                 <div class="login-intro">
                     Bienvenido. Esta herramienta transforma textos generados por IA en textos naturales, auténticos y con verdadera voz humana.
@@ -136,7 +135,7 @@ def check_password():
             </div>
         """, unsafe_allow_html=True)
         
-        # Caja de contraseña centrada con su etiqueta
+        # 3. Caja de contraseña centrada con su etiqueta
         col1, col2, col3 = st.columns([1, 2, 1]) 
         with col2:
             st.text_input("Ingresa la contraseña para acceder", type="password", on_change=password_entered, key="password")
