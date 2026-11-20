@@ -1,0 +1,11 @@
+# Archivos de Streamlit (¡Contiene tus claves secretas!)
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# Archivos de entorno
+.env
+
+# Archivos basura de Python
+__pycache__/
+*.pyc
+.DS_Store
