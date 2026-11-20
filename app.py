@@ -23,6 +23,9 @@ st.markdown("""
     .stApp { background-color: #0F1115; font-family: 'Inter', sans-serif; }
     h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
     
+    /* AJUSTE: Subimos un poco el título principal para que no quede tan abajo */
+    .block-container { padding-top: 1.5rem !important; }
+    
     /* ESTILOS PARA LA PANTALLA DE LOGIN */
     .login-title { font-size: 2rem !important; color: #F5F5F5; text-align: center; margin-bottom: 0.5rem; margin-top: 1rem; }
     .login-intro { font-size: 1rem; color: #A0A0A0; text-align: center; max-width: 400px; line-height: 1.5; margin: 0 auto 2rem auto; }
@@ -38,8 +41,8 @@ st.markdown("""
     .stTextInput>label { display: flex; justify-content: center; color: #A0A0A0 !important; }
 
     /* ESTILOS GENERALES DE LA APP */
-    .header-title { font-size: 2.2rem !important; color: #F5F5F5; margin-bottom: 0.2rem; }
-    .header-subtitle { font-size: 0.95rem; color: #888888; margin-bottom: 2rem; }
+    .header-title { font-size: 2.2rem !important; color: #F5F5F5; margin-bottom: 0.2rem; margin-top: -1rem; } /* Subimos el título */
+    .header-subtitle { font-size: 0.95rem; color: #888888; margin-bottom: 1.5rem; }
     h4 { font-family: 'Inter', sans-serif !important; color: #E0E0E0 !important; font-weight: 500 !important; font-size: 1rem !important; margin-bottom: 0.5rem !important; letter-spacing: 0.02em; }
 
     .stTextArea textarea {
@@ -64,7 +67,18 @@ st.markdown("""
     .stButton>button[kind="primary"]:hover { background-color: #c56544 !important; }
 
     [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
-    .stSelectbox [data-baseweb="select"] { background-color: #16181D !important; border: 1px solid #2A2D35 !important; color: #E0E0E0 !important; border-radius: 6px !important; }
+    
+    /* CUADRO DE MOTOR PERSONALIZADO (SIN EMOJI) */
+    .motor-box {
+        background-color: #1E293B; /* Fondo azul oscuro */
+        border-left: 4px solid #3B82F6; /* Borde azul */
+        padding: 1rem;
+        border-radius: 6px;
+        margin-top: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    .motor-box strong { color: #E0E0E0; font-size: 0.95rem; }
+    .motor-box p { color: #9CA3AF; font-size: 0.85rem; margin-top: 0.3rem; margin-bottom: 0; font-style: italic; }
 
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
     
@@ -74,8 +88,8 @@ st.markdown("""
     .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
     .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
 
-    /* PIE DE PÁGINA (DERECHOS RESERVADOS) */
-    .footer-text { text-align: center; color: #666; font-size: 0.8rem; margin-top: 3rem; margin-bottom: 2rem; }
+    /* PIE DE PÁGINA (DERECHOS RESERVADOS) - EN BLANCO */
+    .footer-text { text-align: center; color: #FFFFFF; opacity: 0.8; font-size: 0.85rem; margin-top: 3rem; margin-bottom: 2rem; }
 
     /* --- RESPONSIVE (MÓVILES) --- */
     @media (max-width: 768px) {
@@ -144,10 +158,13 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    # MENÚ ELIMINADO: Ahora usamos un texto fijo que explica el modelo
-    st.info("🤖 **Motor:** Gemini 3.5 Flash Lite\n\n*Optimizado para máxima naturalidad y evasión de detectores.*")
-    
-    st.markdown("<br>", unsafe_allow_html=True)
+    # CUADRO DE MOTOR PERSONALIZADO (SIN EMOJI)
+    st.markdown("""
+        <div class="motor-box">
+            <strong>Motor: Gemini 3.5 Flash Lite</strong>
+            <p>Optimizado para máxima naturalidad y evasión de detectores.</p>
+        </div>
+    """, unsafe_allow_html=True)
     
     if st.button("Cerrar Sesión"):
         del st.session_state["password_correct"]
@@ -165,7 +182,7 @@ if "texto_original" not in st.session_state:
 if "texto_humanizado" not in st.session_state:
     st.session_state["texto_humanizado"] = ""
 
-# Función para limpiar los textos
+# Función para limpiar AMBOS textos
 def limpiar_textos():
     st.session_state["texto_original"] = ""
     st.session_state["texto_humanizado"] = ""
@@ -210,7 +227,6 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # PROMPT MEJORADO CON INSTRUCCIONES DE "CAMUFLAJE HUMANO"
                     prompt_sistema = """
                     Actúa como un estudiante universitario escribiendo un ensayo de forma muy natural. Tu objetivo es reescribir el texto para que pase como 100% humano ante los detectores de IA.
                     Sigue estas reglas estrictamente:
@@ -223,13 +239,12 @@ with col_btn1:
                     7. Devuelve SOLO el texto final, sin saludos ni explicaciones.
                     """
                     
-                    # MODELO FIJO: Usamos el 3.5-flash-lite directamente
                     response = client.models.generate_content(
                         model="gemini-3.5-flash-lite", 
                         contents=st.session_state["texto_original"],
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema,
-                            temperature=0.9, # Subimos un poco más para que sea impredecible
+                            temperature=0.9, 
                         )
                     )
                     
