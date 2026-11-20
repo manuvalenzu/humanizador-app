@@ -97,14 +97,17 @@ def check_password():
 
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
         
-        # Usamos columnas vacías a los lados para forzar el centrado perfecto
+        # Columnas para centrar absolutamente todo el bloque de login
         col_izq, col_centro, col_der = st.columns([1, 2, 1])
         
         with col_centro:
-            # Logo centrado y con tamaño controlado (110px)
-            st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=110)
+            # 1. LOGO CENTRADO (Usamos columnas internas para que quede en el medio exacto)
+            col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
+            with col_logo_centro:
+                # Tamaño aumentado a 130px
+                st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", use_container_width=True)
             
-            # Título y texto
+            # 2. TÍTULO E INTRO
             st.markdown("""
                 <div class="login-title">Humanizador Pro</div>
                 <div class="login-intro">
@@ -112,15 +115,15 @@ def check_password():
                 </div>
             """, unsafe_allow_html=True)
             
-            # Caja de contraseña y botón
+            # 3. CAJA DE CONTRASEÑA Y BOTÓN
             st.text_input("Ingresa la contraseña para acceder", type="password", key="password_input")
             st.button("Ingresar", on_click=verify_password, use_container_width=True, type="primary")
             
             if "password_correct" in st.session_state and not st.session_state["password_correct"]:
                 st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
 
-        # Texto de derechos reservados al pie del inicio
-        st.markdown('<div class="footer-text">Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
+        # 4. PIE DE PÁGINA CON EL SÍMBOLO ®
+        st.markdown('<div class="footer-text">®Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
             
         return False
     else:
@@ -262,4 +265,4 @@ if st.session_state["texto_humanizado"]:
     )
 
 # --- PIE DE PÁGINA (DERECHOS RESERVADOS) ---
-st.markdown('<div class="footer-text">Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer-text">®Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
