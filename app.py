@@ -15,7 +15,7 @@ try:
 except Exception:
     MI_API_KEY = None
 
-# --- CSS PERSONALIZADO ---
+# --- CSS PERSONALIZADO (DISEÑO Y RESPONSIVE) ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:wght@600;700&display=swap');
@@ -24,13 +24,13 @@ st.markdown("""
     h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
     
     /* ESTILOS PARA LA PANTALLA DE LOGIN */
-    .login-container {
-        display: flex; flex-direction: column; align-items: center;
-        justify-content: center; text-align: center;
-        margin-top: 5vh; margin-bottom: 1rem;
+    .login-wrapper {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        min-height: 80vh; /* Centrado vertical */
+        text-align: center;
     }
     .login-title { font-size: 2rem !important; color: #F5F5F5; margin-bottom: 0.5rem; margin-top: 1rem; }
-    .login-intro { font-size: 1rem; color: #A0A0A0; max-width: 400px; line-height: 1.5; margin-bottom: 1rem; }
+    .login-intro { font-size: 1rem; color: #A0A0A0; max-width: 400px; line-height: 1.5; margin-bottom: 2rem; }
 
     /* CAJA DE CONTRASEÑA */
     .stTextInput>div>div>input {
@@ -63,13 +63,10 @@ st.markdown("""
     }
     .stButton>button:hover { border-color: #D97757 !important; color: #D97757 !important; background-color: rgba(217, 119, 87, 0.05) !important; }
 
-    /* BOTÓN DE INGRESAR Y SALIR (Estilo especial) */
     .stButton>button[kind="primary"] {
         background-color: #D97757 !important; color: #FFFFFF !important; border: none !important;
     }
-    .stButton>button[kind="primary"]:hover {
-        background-color: #c56544 !important; color: #FFFFFF !important;
-    }
+    .stButton>button[kind="primary"]:hover { background-color: #c56544 !important; }
 
     [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
     .stSelectbox [data-baseweb="select"] { background-color: #16181D !important; border: 1px solid #2A2D35 !important; color: #E0E0E0 !important; border-radius: 6px !important; }
@@ -79,13 +76,19 @@ st.markdown("""
     .sidebar-title { font-family: 'Playfair Display', serif; font-size: 1.5rem; color: #E0E0E0; font-weight: 700; line-height: 1.2; margin-bottom: 2rem; }
     .sidebar-title span { color: #D97757; font-size: 2rem; line-height: 0; }
 
-    .signature-container {
-        display: flex; justify-content: flex-end; width: 100%;
-        margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem;
-    }
-    .signature-text {
-        font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; 
-        letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; 
+    .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
+    .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
+
+    /* DERECHOS RESERVADOS (PIE DE PÁGINA) */
+    .footer { text-align: center; color: #666; font-size: 0.8rem; margin-top: 4rem; padding-bottom: 2rem; }
+
+    /* --- RESPONSIVE (MÓVILES Y TABLETS) --- */
+    @media (max-width: 768px) {
+        /* En pantallas pequeñas, reducimos márgenes y hacemos textos más pequeños */
+        .header-title { font-size: 1.8rem !important; }
+        .login-wrapper { min-height: 60vh; }
+        .stButton>button { padding: 0.8rem; font-size: 1rem; } /* Botones más grandes para dedos */
+        .signature-container { margin-top: -1rem; }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -101,19 +104,20 @@ def check_password():
 
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
         
-        # Logo y Textos
-        col_logo1, col_logo2, col_logo3 = st.columns([1, 1, 1])
+        # Centramos todo verticalmente
+        st.markdown('<div class="login-wrapper">', unsafe_allow_html=True)
+        
+        # Logo más pequeño (ajustado a 100px)
+        col_logo1, col_logo2, col_logo3 = st.columns([1, 1.5, 1])
         with col_logo2:
             url_logo = "https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png"
-            st.image(url_logo, use_container_width=True)
+            st.image(url_logo, width=110) # Tamaño reducido
 
         st.markdown("""
-            <div class="login-container">
                 <div class="login-title">Humanizador Pro</div>
                 <div class="login-intro">
                     Bienvenido. Esta herramienta transforma textos generados por IA en textos naturales, auténticos y con verdadera voz humana.
                 </div>
-            </div>
         """, unsafe_allow_html=True)
         
         # Caja de contraseña y BOTÓN DE INGRESAR
@@ -125,6 +129,7 @@ def check_password():
         if "password_correct" in st.session_state and not st.session_state["password_correct"]:
             st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
             
+        st.markdown('</div>', unsafe_allow_html=True)
         return False
     else:
         return True
@@ -141,9 +146,9 @@ st.markdown('<div class="signature-container"><div class="signature-text">Elabor
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    # 1. LOGO EN LA PARTE SUPERIOR IZQUIERDA
+    # Logo pequeño en la barra lateral (ajustado a 60px)
     url_logo = "https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png"
-    st.image(url_logo, width=60) # Tamaño pequeño para la barra lateral
+    st.image(url_logo, width=60)
     
     st.markdown('<div class="sidebar-title">PANEL DE<br>CONTROL<span>.</span></div>', unsafe_allow_html=True)
     st.markdown("### Configuración")
@@ -152,8 +157,8 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    # 2. SELECTOR DE MODELO MEJORADO
-    st.markdown("#### Elige un modelo")
+    # TEXTOS CAMBIADOS: "Elige un modelo API"
+    st.markdown("#### Elige un modelo API")
     
     opciones_modelos = {
         "gemini-3.8-flash": "Rápido y equilibrado (Recomendado)",
@@ -170,7 +175,6 @@ with st.sidebar:
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 3. BOTÓN DE CERRAR SESIÓN
     if st.button("Cerrar Sesión"):
         del st.session_state["password_correct"]
         st.rerun()
@@ -223,7 +227,7 @@ if st.button("Refinar Texto", use_container_width=True, type="primary"):
                 """
                 
                 response = client.models.generate_content(
-                    model=modelo_seleccionado, # Usamos el modelo seleccionado
+                    model=modelo_seleccionado,
                     contents=texto_original,
                     config=types.GenerateContentConfig(
                         system_instruction=prompt_sistema,
@@ -267,3 +271,6 @@ if st.session_state["texto_humanizado"]:
         """,
         height=60,
     )
+
+# --- PIE DE PÁGINA (DERECHOS RESERVADOS) ---
+st.markdown('<div class="footer">Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
