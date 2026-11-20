@@ -149,7 +149,7 @@ with st.sidebar:
     opciones_modelos = {
         "gemini-3.8-flash": "Rápido y equilibrado (Recomendado)",
         "gemini-3.6-flash": "Excelente para textos largos y formales",
-        "gemini-3.5-flash-lite": "Ultra ligero, ideal si el servidor está saturado"
+        "gemini-3.5-flash-lite": "Ultra ligero, ideal para evadir detectores"
     }
     
     modelo_seleccionado = st.selectbox(
@@ -194,7 +194,6 @@ with col1:
         label_visibility="collapsed",
         key="input_original"
     )
-    # Guardamos lo que escribe el usuario en el estado
     st.session_state["texto_original"] = texto_original
 
 with col2:
@@ -210,7 +209,6 @@ with col2:
 # --- BOTONES DE ACCIÓN ---
 st.markdown("<br>", unsafe_allow_html=True) 
 
-# Creamos dos columnas para los botones (Refinar y Limpiar)
 col_btn1, col_btn2 = st.columns([3, 1])
 
 with col_btn1:
@@ -224,20 +222,16 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
+                    # PROMPT MEJORADO (ANTI-DETECTORES)
                     prompt_sistema = """
-                    Eres un editor humano experto. Tu tarea es reescribir el texto para que suene 100% natural y humano, adaptándote al tipo de texto que recibas.
-                    
-                    REGLAS GENERALES:
-                    1. Elimina conectores robóticos: "En primera instancia", "Adicionalmente", "En conclusión", "Cabe destacar".
-                    2. Cambia el verbo ser rebuscado ("se erige como", "constituye") por "es", "tiene".
-                    3. Rompe la regla de tres.
-                    4. Varía el ritmo: mezcla frases cortas y largas.
-                    5. NO cambies datos, cifras ni nombres.
-                    6. Devuelve SOLO el texto final.
-
-                    REGLAS SEGÚN EL TIPO DE TEXTO:
-                    - Si es un ENSAYO ACADÉMICO o texto formal: Mantén un tono serio, profesional y culto. NO uses coloquialismos como "Ojo", "Spoiler", "Onda", ni uses paréntesis informales. El "ruido humano" debe ser académico (ej. "En mi opinión...", "Resulta interesante notar que...").
-                    - Si es un texto informal, blog o redes sociales: Inyecta "ruido humano" coloquial (paréntesis, primera persona, micro-dudas).
+                    Actúa como un estudiante universitario escribiendo un ensayo de forma muy natural. Tu objetivo es reescribir el texto para que pase como 100% humano ante los detectores de IA.
+                    Sigue estas reglas estrictamente:
+                    1. Rompe la estructura robótica: no uses párrafos perfectos, mezcla frases muy cortas con frases largas.
+                    2. Usa conectores informales pero académicos (ej. "A fin de cuentas...", "Ojo, no se trata de...", "Lo cierto es que...").
+                    3. Introduce "ruido humano": usa paréntesis para aclaraciones, haz alguna pregunta retórica al lector, y usa la primera persona del plural de vez en cuando (ej. "como sociedad...").
+                    4. NUNCA uses estas palabras: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como", "Cabe destacar", "En resumen".
+                    5. Mantén EXACTAMENTE los mismos datos, cifras, nombres y hechos del texto original. No inventes información nueva.
+                    6. Devuelve SOLO el texto final, sin saludos ni explicaciones.
                     """
                     
                     response = client.models.generate_content(
@@ -245,7 +239,7 @@ with col_btn1:
                         contents=st.session_state["texto_original"],
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema,
-                            temperature=0.7,
+                            temperature=0.85, # Un poco más de creatividad
                         )
                     )
                     
@@ -257,10 +251,9 @@ with col_btn1:
                     print(f"Error técnico: {e}")
 
 with col_btn2:
-    # BOTÓN PARA LIMPIAR LOS TEXTOS
     st.button("Limpiar Textos", on_click=limpiar_textos, use_container_width=True)
 
-# --- BOTÓN DE COPIAR (ALTURA CORREGIDA) ---
+# --- BOTÓN DE COPIAR ---
 if st.session_state["texto_humanizado"]:
     texto_json = json.dumps(st.session_state["texto_humanizado"])
     components.html(
@@ -287,7 +280,7 @@ if st.session_state["texto_humanizado"]:
         }});
         </script>
         """,
-        height=70, # AUMENTAMOS LA ALTURA DEL CONTENEDOR A 70px
+        height=70, 
     )
 
 # --- PIE DE PÁGINA (DERECHOS RESERVADOS) ---
