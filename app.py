@@ -181,12 +181,13 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    st.markdown("""
-        <div class="motor-box">
-            <strong>Motor: Gemini 3.5 Flash Lite</strong>
-            <p>Optimizado para máxima naturalidad y evasión de detectores.</p>
-        </div>
-    """, unsafe_allow_html=True)
+    # NUEVO SELECTOR DE TONO
+    tono_seleccionado = st.radio(
+        "Selecciona el tono del texto:",
+        ["Académico Formal", "Humano Natural"]
+    )
+    
+    st.markdown("<br>", unsafe_allow_html=True)
     
     if st.button("Cerrar Sesión"):
         del st.session_state["password_correct"]
@@ -202,22 +203,20 @@ st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues
 if "texto_humanizado" not in st.session_state:
     st.session_state["texto_humanizado"] = ""
 
-# Función para limpiar textos (borra el humanizado y resetea la caja)
+# Función para limpiar textos
 def limpiar_textos():
     st.session_state["texto_humanizado"] = ""
-    # Aquí no podemos borrar el input_original directamente, así que usamos una clave para forzar el reinicio
     st.session_state["input_original_key"] = "" 
 
 col1, col2 = st.columns(2, gap="medium")
 
 with col1:
     st.markdown("#### Texto Original")
-    # Leemos directamente del text_area, sin usar 'value' del session_state para evitar conflictos
     texto_original = st.text_area(
         "Pega tu texto aquí:", 
         height=400, 
         label_visibility="collapsed",
-        key="input_original_key" # Usamos una key distinta
+        key="input_original_key"
     )
 
 with col2:
@@ -237,35 +236,46 @@ col_btn1, col_btn2 = st.columns([3, 1])
 
 with col_btn1:
     if st.button("Refinar Texto", use_container_width=True, type="primary"):
-        # AHORA LEEMOS DIRECTAMENTE EL TEXTO DE LA VARIABLE
         if not texto_original.strip():
             st.warning("Por favor, pega un texto primero.")
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key.")
         else:
-            with st.spinner("Aplicando reglas editoriales..."):
+            with st.spinner(f"Aplicando reglas editoriales (Tono: {tono_seleccionado})..."):
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # PROMPT EQUILIBRADO
-                    prompt_sistema = """
-                    Actúa como un redactor humano experto. Reescribe el texto para que pase los detectores de IA, pero manteniendo un tono académico y profesional (ideal para la universidad).
-                    Reglas estrictas:
-                    1. Rompe la estructura robótica: mezcla frases cortas y largas, no hagas párrafos perfectos.
-                    2. Evita palabras robóticas: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como", "Cabe destacar", "En resumen".
-                    3. Para sonar humano, usa conectores académicos naturales (ej. "A fin de cuentas...", "Ojo, no se trata de...", "Lo cierto es que...").
-                    4. Introduce "ruido humano": usa paréntesis para aclaraciones, haz alguna pregunta retórica, y usa la primera persona del plural (ej. "como sociedad...").
-                    5. Usa guiones (-) o puntos suspensivos (...) en lugar de comas muy formales.
-                    6. NUNCA uses jerga, coloquialismos, ni palabras como "chamba", "chambear", "patito", "camiseta", "bronca", "rollo", etc. El vocabulario debe ser rico y formal.
-                    7. Mantén EXACTAMENTE los mismos datos, cifras, nombres y hechos del texto original. No inventes información nueva.
-                    8. Devuelve SOLO el texto final, sin saludos ni explicaciones.
-                    """
+                    # DEPENDIENDO DEL TONO, USAMOS UN PROMPT U OTRO
+                    if tono_seleccionado == "Académico Formal":
+                        prompt_sistema = """
+                        Actúa como un redactor humano experto. Reescribe el texto manteniendo un tono académico y profesional (ideal para la universidad).
+                        Reglas:
+                        1. Rompe la estructura robótica: mezcla frases cortas y largas.
+                        2. Evita palabras robóticas: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como", "Cabe destacar".
+                        3. Para sonar humano, usa conectores académicos naturales (ej. "A fin de cuentas...", "Ojo, no se trata de...", "Lo cierto es que...").
+                        4. Usa paréntesis para aclaraciones, haz alguna pregunta retórica, usa la primera persona del plural.
+                        5. NUNCA uses jerga coloquial (ej. "chamba", "rollo"). El vocabulario debe ser formal.
+                        6. Mantén EXACTAMENTE los mismos datos, cifras y nombres.
+                        7. Devuelve SOLO el texto final.
+                        """
+                    else:
+                        prompt_sistema = """
+                        Actúa como un estudiante universitario escribiendo en un foro. Tu objetivo es reescribir el texto para que pase como 100% humano ante los detectores de IA.
+                        Reglas:
+                        1. Rompe la estructura: no uses párrafos perfectos, mezcla frases muy cortas con largas.
+                        2. Usa conectores informales (ej. "A fin de cuentas...", "Lo cierto es que...", "Y bueno...").
+                        3. Introduce "ruido humano": usa paréntesis, preguntas retóricas, y de vez en cuando empieza frases con "Y" o "Pero".
+                        4. Usa guiones (-) o puntos suspensivos (...) en lugar de comas formales.
+                        5. NUNCA uses estas palabras: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como".
+                        6. Mantén EXACTAMENTE los mismos datos, cifras y nombres.
+                        7. Devuelve SOLO el texto final.
+                        """
                     
                     response = client.models.generate_content(
                         model="gemini-3.5-flash-lite", 
-                        contents=texto_original, # Usamos la variable directa
+                        contents=texto_original,
                         config=types.GenerateContentConfig(
-                            system_instruction=prompt_sistema, temperature=0.85, 
+                            system_instruction=prompt_sistema, temperature=0.9, 
                         )
                     )
                     
