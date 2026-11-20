@@ -198,26 +198,26 @@ st.markdown('<div class="header-subtitle">Refina textos generados por IA para da
 
 st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues datos personales ni confidenciales.")
 
-if "texto_original" not in st.session_state:
-    st.session_state["texto_original"] = ""
+# Inicializamos el estado
 if "texto_humanizado" not in st.session_state:
     st.session_state["texto_humanizado"] = ""
 
+# Función para limpiar textos (borra el humanizado y resetea la caja)
 def limpiar_textos():
-    st.session_state["texto_original"] = ""
     st.session_state["texto_humanizado"] = ""
-    st.session_state["input_original"] = ""
+    # Aquí no podemos borrar el input_original directamente, así que usamos una clave para forzar el reinicio
+    st.session_state["input_original_key"] = "" 
 
 col1, col2 = st.columns(2, gap="medium")
 
 with col1:
     st.markdown("#### Texto Original")
+    # Leemos directamente del text_area, sin usar 'value' del session_state para evitar conflictos
     texto_original = st.text_area(
         "Pega tu texto aquí:", 
-        value=st.session_state["texto_original"],
         height=400, 
         label_visibility="collapsed",
-        key="input_original"
+        key="input_original_key" # Usamos una key distinta
     )
 
 with col2:
@@ -237,7 +237,8 @@ col_btn1, col_btn2 = st.columns([3, 1])
 
 with col_btn1:
     if st.button("Refinar Texto", use_container_width=True, type="primary"):
-        if not st.session_state["texto_original"].strip():
+        # AHORA LEEMOS DIRECTAMENTE EL TEXTO DE LA VARIABLE
+        if not texto_original.strip():
             st.warning("Por favor, pega un texto primero.")
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key.")
@@ -246,7 +247,7 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # PROMPT EQUILIBRADO (NI MUY FORMAL, NI MUY INFORMAL)
+                    # PROMPT EQUILIBRADO
                     prompt_sistema = """
                     Actúa como un redactor humano experto. Reescribe el texto para que pase los detectores de IA, pero manteniendo un tono académico y profesional (ideal para la universidad).
                     Reglas estrictas:
@@ -262,7 +263,7 @@ with col_btn1:
                     
                     response = client.models.generate_content(
                         model="gemini-3.5-flash-lite", 
-                        contents=st.session_state["texto_original"],
+                        contents=texto_original, # Usamos la variable directa
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema, temperature=0.85, 
                         )
