@@ -5,7 +5,7 @@ import streamlit.components.v1 as components
 import json
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="centered")
+st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wide")
 
 # ==========================================
 # LEE LA CLAVE DESDE LOS SECRETOS DE STREAMLIT
@@ -25,48 +25,22 @@ st.markdown("""
     
     /* ESTILOS PARA LA PANTALLA DE LOGIN */
     .login-container {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-        margin-top: 2vh; 
-        margin-bottom: 1rem;
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; text-align: center;
+        margin-top: 5vh; margin-bottom: 1rem;
     }
-    .login-title {
-        font-size: 2rem !important;
-        color: #F5F5F5;
-        margin-bottom: 0.5rem;
-        margin-top: 1rem;
-    }
-    .login-intro {
-        font-size: 1rem;
-        color: #A0A0A0;
-        max-width: 400px;
-        line-height: 1.5;
-        margin-bottom: 1rem;
-    }
+    .login-title { font-size: 2rem !important; color: #F5F5F5; margin-bottom: 0.5rem; margin-top: 1rem; }
+    .login-intro { font-size: 1rem; color: #A0A0A0; max-width: 400px; line-height: 1.5; margin-bottom: 1rem; }
 
     /* CAJA DE CONTRASEÑA */
     .stTextInput>div>div>input {
-        background-color: #16181D !important; 
-        border: 1px solid #2A2D35 !important;
-        color: #E0E0E0 !important;
-        border-radius: 8px !important;
-        padding: 0.8rem !important;
-        text-align: center; 
+        background-color: #16181D !important; border: 1px solid #2A2D35 !important;
+        color: #E0E0E0 !important; border-radius: 8px !important;
+        padding: 0.8rem !important; text-align: center; 
     }
-    .stTextInput>div>div>input:focus {
-        border-color: #D97757 !important;
-        box-shadow: 0 0 0 1px #D97757 !important;
-    }
+    .stTextInput>div>div>input:focus { border-color: #D97757 !important; box-shadow: 0 0 0 1px #D97757 !important; }
     
-    /* Etiqueta de la contraseña centrada */
-    .stTextInput>label {
-        display: flex;
-        justify-content: center;
-        color: #A0A0A0 !important;
-    }
+    .stTextInput>label { display: flex; justify-content: center; color: #A0A0A0 !important; }
 
     /* ESTILOS GENERALES DE LA APP */
     .header-title { font-size: 2.2rem !important; color: #F5F5F5; margin-bottom: 0.2rem; }
@@ -89,6 +63,14 @@ st.markdown("""
     }
     .stButton>button:hover { border-color: #D97757 !important; color: #D97757 !important; background-color: rgba(217, 119, 87, 0.05) !important; }
 
+    /* BOTÓN DE INGRESAR Y SALIR (Estilo especial) */
+    .stButton>button[kind="primary"] {
+        background-color: #D97757 !important; color: #FFFFFF !important; border: none !important;
+    }
+    .stButton>button[kind="primary"]:hover {
+        background-color: #c56544 !important; color: #FFFFFF !important;
+    }
+
     [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
     .stSelectbox [data-baseweb="select"] { background-color: #16181D !important; border: 1px solid #2A2D35 !important; color: #E0E0E0 !important; border-radius: 6px !important; }
 
@@ -110,22 +92,21 @@ st.markdown("""
 
 # --- 1. SEGURIDAD Y PANTALLA DE BIENVENIDA ---
 def check_password():
-    def password_entered():
-        if st.session_state["password"] == st.secrets.get("APP_PASSWORD", "manu2026"):
+    def verify_password():
+        if st.session_state["password_input"] == st.secrets.get("APP_PASSWORD", "manu2026"):
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
+            del st.session_state["password_input"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
         
-        # 1. MOSTRAMOS EL LOGO CON LA URL RAW EXACTA
+        # Logo y Textos
         col_logo1, col_logo2, col_logo3 = st.columns([1, 1, 1])
         with col_logo2:
             url_logo = "https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png"
             st.image(url_logo, use_container_width=True)
 
-        # 2. TÍTULO E INTRO
         st.markdown("""
             <div class="login-container">
                 <div class="login-title">Humanizador Pro</div>
@@ -135,10 +116,11 @@ def check_password():
             </div>
         """, unsafe_allow_html=True)
         
-        # 3. CAJA DE CONTRASEÑA
-        col1, col2, col3 = st.columns([1, 2, 1]) 
+        # Caja de contraseña y BOTÓN DE INGRESAR
+        col1, col2, col3 = st.columns([1, 1.5, 1]) 
         with col2:
-            st.text_input("Ingresa la contraseña para acceder", type="password", on_change=password_entered, key="password")
+            st.text_input("Ingresa la contraseña para acceder", type="password", key="password_input")
+            st.button("Ingresar", on_click=verify_password, use_container_width=True, type="primary")
         
         if "password_correct" in st.session_state and not st.session_state["password_correct"]:
             st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
@@ -159,6 +141,10 @@ st.markdown('<div class="signature-container"><div class="signature-text">Elabor
 
 # --- BARRA LATERAL ---
 with st.sidebar:
+    # 1. LOGO EN LA PARTE SUPERIOR IZQUIERDA
+    url_logo = "https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png"
+    st.image(url_logo, width=60) # Tamaño pequeño para la barra lateral
+    
     st.markdown('<div class="sidebar-title">PANEL DE<br>CONTROL<span>.</span></div>', unsafe_allow_html=True)
     st.markdown("### Configuración")
     
@@ -166,19 +152,33 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    modelo = st.selectbox(
-        "Modelo",
-        ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
-        index=0
+    # 2. SELECTOR DE MODELO MEJORADO
+    st.markdown("#### Elige un modelo")
+    
+    opciones_modelos = {
+        "gemini-3.8-flash": "Rápido y equilibrado (Recomendado)",
+        "gemini-3.6-flash": "Excelente para textos largos y formales",
+        "gemini-3.5-flash-lite": "Ultra ligero, ideal si el servidor está saturado"
+    }
+    
+    modelo_seleccionado = st.selectbox(
+        "Modelo:",
+        list(opciones_modelos.keys()),
+        index=0,
+        format_func=lambda x: f"{x} - {opciones_modelos[x]}"
     )
+    
     st.markdown("<br>", unsafe_allow_html=True)
-    st.caption("Nota: Si el servicio está saturado (Error 503), cambia el modelo.")
+    
+    # 3. BOTÓN DE CERRAR SESIÓN
+    if st.button("Cerrar Sesión"):
+        del st.session_state["password_correct"]
+        st.rerun()
 
 # --- ÁREA PRINCIPAL ---
 st.markdown('<div class="header-title">Humanizador de Textos</div>', unsafe_allow_html=True)
 st.markdown('<div class="header-subtitle">Refina textos generados por IA para darles una voz auténticamente humana.</div>', unsafe_allow_html=True)
 
-# Aviso legal de privacidad
 st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues datos personales ni confidenciales.")
 
 col1, col2 = st.columns(2, gap="medium")
@@ -196,7 +196,7 @@ with col2:
 
 # --- BOTÓN DE ACCIÓN ---
 st.markdown("<br>", unsafe_allow_html=True) 
-if st.button("Refinar Texto", use_container_width=True):
+if st.button("Refinar Texto", use_container_width=True, type="primary"):
     if not texto_original.strip():
         st.warning("Por favor, pega un texto primero.")
     elif not MI_API_KEY:
@@ -223,7 +223,7 @@ if st.button("Refinar Texto", use_container_width=True):
                 """
                 
                 response = client.models.generate_content(
-                    model=modelo,
+                    model=modelo_seleccionado, # Usamos el modelo seleccionado
                     contents=texto_original,
                     config=types.GenerateContentConfig(
                         system_instruction=prompt_sistema,
