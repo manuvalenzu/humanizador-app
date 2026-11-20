@@ -23,16 +23,15 @@ st.markdown("""
     .stApp { background-color: #0F1115; font-family: 'Inter', sans-serif; }
     h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
     
-    /* --- ARREGLO PARA QUE EL BOTÓN DE ABRIR LA BARRA LATERAL SE VEA SIEMPRE --- */
+    /* ARREGLO PARA EL BOTÓN DE ABRIR LA BARRA LATERAL */
     [data-testid="collapsedControl"] {
         display: block !important;
-        color: #D97757 !important; /* Color naranja para que resalte */
+        color: #D97757 !important; 
         background-color: #1E293B !important;
         border-radius: 50% !important;
         padding: 5px !important;
     }
 
-    /* Ajustamos el margen superior para que el contenido respire */
     .block-container { padding-top: 2rem !important; }
     
     /* ESTILOS PARA LA PANTALLA DE LOGIN */
@@ -144,7 +143,6 @@ def check_password():
             if "password_correct" in st.session_state and not st.session_state["password_correct"]:
                 st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
 
-        # Footer para la pantalla de Login
         st.markdown("""
             <div class="footer-container">
                 <div class="footer-disclaimer">
@@ -172,7 +170,6 @@ st.markdown('<div class="signature-container"><div class="signature-text">Elabor
 with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True) 
     
-    # LOGO ARREGLADO: Lo centramos mejor con columnas [1, 1, 1] y un tamaño de 100px
     col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
     with col_logo_centro:
         st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=100)
@@ -201,24 +198,20 @@ st.markdown('<div class="header-subtitle">Refina textos generados por IA para da
 
 st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues datos personales ni confidenciales.")
 
-# Inicializamos el estado
 if "texto_original" not in st.session_state:
     st.session_state["texto_original"] = ""
 if "texto_humanizado" not in st.session_state:
     st.session_state["texto_humanizado"] = ""
 
-# FUNCIÓN DE LIMPIAR ARREGLADA
 def limpiar_textos():
     st.session_state["texto_original"] = ""
     st.session_state["texto_humanizado"] = ""
-    # Forzamos a Streamlit a actualizar el valor del cuadro de texto
-    st.session_state["input_original"] = "" 
+    st.session_state["input_original"] = ""
 
 col1, col2 = st.columns(2, gap="medium")
 
 with col1:
     st.markdown("#### Texto Original")
-    # Usamos "key" para que Streamlit sepa que este cuadro es el que se debe limpiar
     texto_original = st.text_area(
         "Pega tu texto aquí:", 
         value=st.session_state["texto_original"],
@@ -244,7 +237,7 @@ col_btn1, col_btn2 = st.columns([3, 1])
 
 with col_btn1:
     if st.button("Refinar Texto", use_container_width=True, type="primary"):
-        if not texto_original.strip():
+        if not st.session_state["texto_original"].strip():
             st.warning("Por favor, pega un texto primero.")
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key.")
@@ -253,23 +246,25 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
+                    # PROMPT EQUILIBRADO (NI MUY FORMAL, NI MUY INFORMAL)
                     prompt_sistema = """
-                    Actúa como un estudiante universitario escribiendo un ensayo de forma muy natural. Tu objetivo es reescribir el texto para que pase como 100% humano ante los detectores de IA.
-                    Sigue estas reglas estrictamente:
-                    1. Rompe la estructura robótica: no uses párrafos perfectos, mezcla frases muy cortas con frases largas.
-                    2. Usa conectores informales pero académicos (ej. "A fin de cuentas...", "Ojo, no se trata de...", "Lo cierto es que...").
-                    3. Introduce "ruido humano" y pequeñas imperfecciones: usa paréntesis para aclaraciones, haz alguna pregunta retórica al lector, usa la primera persona del plural (ej. "como sociedad..."), y de vez en cuando empieza frases con "Y" o "Pero".
-                    4. Para despistar a los detectores, usa guiones (-) o puntos suspensivos (...) en lugar de comas muy formales.
-                    5. NUNCA uses estas palabras: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como", "Cabe destacar", "En resumen".
-                    6. Mantén EXACTAMENTE los mismos datos, cifras, nombres y hechos del texto original. No inventes información nueva.
-                    7. Devuelve SOLO el texto final, sin saludos ni explicaciones.
+                    Actúa como un redactor humano experto. Reescribe el texto para que pase los detectores de IA, pero manteniendo un tono académico y profesional (ideal para la universidad).
+                    Reglas estrictas:
+                    1. Rompe la estructura robótica: mezcla frases cortas y largas, no hagas párrafos perfectos.
+                    2. Evita palabras robóticas: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como", "Cabe destacar", "En resumen".
+                    3. Para sonar humano, usa conectores académicos naturales (ej. "A fin de cuentas...", "Ojo, no se trata de...", "Lo cierto es que...").
+                    4. Introduce "ruido humano": usa paréntesis para aclaraciones, haz alguna pregunta retórica, y usa la primera persona del plural (ej. "como sociedad...").
+                    5. Usa guiones (-) o puntos suspensivos (...) en lugar de comas muy formales.
+                    6. NUNCA uses jerga, coloquialismos, ni palabras como "chamba", "chambear", "patito", "camiseta", "bronca", "rollo", etc. El vocabulario debe ser rico y formal.
+                    7. Mantén EXACTAMENTE los mismos datos, cifras, nombres y hechos del texto original. No inventes información nueva.
+                    8. Devuelve SOLO el texto final, sin saludos ni explicaciones.
                     """
                     
                     response = client.models.generate_content(
                         model="gemini-3.5-flash-lite", 
-                        contents=texto_original,
+                        contents=st.session_state["texto_original"],
                         config=types.GenerateContentConfig(
-                            system_instruction=prompt_sistema, temperature=0.9, 
+                            system_instruction=prompt_sistema, temperature=0.85, 
                         )
                     )
                     
@@ -281,7 +276,6 @@ with col_btn1:
                     print(f"Error técnico: {e}")
 
 with col_btn2:
-    # El botón ahora sí borra los dos
     st.button("Limpiar Textos", on_click=limpiar_textos, use_container_width=True)
 
 # --- BOTÓN DE COPIAR ---
