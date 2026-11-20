@@ -144,20 +144,8 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    st.markdown("#### Elige un modelo API")
-    
-    # MENÚ ACTUALIZADO: Solo los 2 modelos que mejor funcionan
-    opciones_modelos = {
-        "gemini-3.5-flash-lite": "El más rápido y evade detectores (Recomendado)",
-        "gemini-3.6-flash": "Ideal para textos formales y largos"
-    }
-    
-    modelo_seleccionado = st.selectbox(
-        "Modelo:",
-        list(opciones_modelos.keys()),
-        index=0,
-        format_func=lambda x: f"{x} - {opciones_modelos[x]}"
-    )
+    # MENÚ ELIMINADO: Ahora usamos un texto fijo que explica el modelo
+    st.info("🤖 **Motor:** Gemini 3.5 Flash Lite\n\n*Optimizado para máxima naturalidad y evasión de detectores.*")
     
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -234,8 +222,9 @@ with col_btn1:
                     6. Devuelve SOLO el texto final, sin saludos ni explicaciones.
                     """
                     
+                    # MODELO FIJO: Usamos el 3.5-flash-lite directamente
                     response = client.models.generate_content(
-                        model=modelo_seleccionado,
+                        model="gemini-3.5-flash-lite", 
                         contents=st.session_state["texto_original"],
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema,
@@ -247,7 +236,7 @@ with col_btn1:
                     st.rerun() 
                     
                 except Exception as e:
-                    st.error("Ocurrió un error al procesar el texto. Revisa tu conexión o intenta con otro modelo.")
+                    st.error("Ocurrió un error al procesar el texto. Revisa tu conexión o intenta de nuevo en unos minutos.")
                     print(f"Error técnico: {e}")
 
 with col_btn2:
