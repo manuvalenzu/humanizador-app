@@ -15,7 +15,7 @@ try:
 except Exception:
     MI_API_KEY = None
 
-# --- CSS PERSONALIZADO (DISEÑO Y RESPONSIVE) ---
+# --- CSS PERSONALIZADO ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:wght@600;700&display=swap');
@@ -24,13 +24,8 @@ st.markdown("""
     h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
     
     /* ESTILOS PARA LA PANTALLA DE LOGIN */
-    .login-wrapper {
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        min-height: 80vh; /* Centrado vertical */
-        text-align: center;
-    }
-    .login-title { font-size: 2rem !important; color: #F5F5F5; margin-bottom: 0.5rem; margin-top: 1rem; }
-    .login-intro { font-size: 1rem; color: #A0A0A0; max-width: 400px; line-height: 1.5; margin-bottom: 2rem; }
+    .login-title { font-size: 2rem !important; color: #F5F5F5; text-align: center; margin-bottom: 0.5rem; margin-top: 1rem; }
+    .login-intro { font-size: 1rem; color: #A0A0A0; text-align: center; max-width: 400px; line-height: 1.5; margin: 0 auto 2rem auto; }
 
     /* CAJA DE CONTRASEÑA */
     .stTextInput>div>div>input {
@@ -79,16 +74,14 @@ st.markdown("""
     .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
     .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
 
-    /* DERECHOS RESERVADOS (PIE DE PÁGINA) */
-    .footer { text-align: center; color: #666; font-size: 0.8rem; margin-top: 4rem; padding-bottom: 2rem; }
+    /* PIE DE PÁGINA (DERECHOS RESERVADOS) */
+    .footer-text { text-align: center; color: #666; font-size: 0.8rem; margin-top: 5rem; margin-bottom: 2rem; }
 
-    /* --- RESPONSIVE (MÓVILES Y TABLETS) --- */
+    /* --- RESPONSIVE (MÓVILES) --- */
     @media (max-width: 768px) {
-        /* En pantallas pequeñas, reducimos márgenes y hacemos textos más pequeños */
         .header-title { font-size: 1.8rem !important; }
-        .login-wrapper { min-height: 60vh; }
-        .stButton>button { padding: 0.8rem; font-size: 1rem; } /* Botones más grandes para dedos */
-        .signature-container { margin-top: -1rem; }
+        .stButton>button { padding: 0.8rem; font-size: 1rem; }
+        .login-title { font-size: 1.6rem !important; }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -104,32 +97,31 @@ def check_password():
 
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
         
-        # Centramos todo verticalmente
-        st.markdown('<div class="login-wrapper">', unsafe_allow_html=True)
+        # Usamos columnas vacías a los lados para forzar el centrado perfecto
+        col_izq, col_centro, col_der = st.columns([1, 2, 1])
         
-        # Logo más pequeño (ajustado a 100px)
-        col_logo1, col_logo2, col_logo3 = st.columns([1, 1.5, 1])
-        with col_logo2:
-            url_logo = "https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png"
-            st.image(url_logo, width=110) # Tamaño reducido
-
-        st.markdown("""
+        with col_centro:
+            # Logo centrado y con tamaño controlado (110px)
+            st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=110)
+            
+            # Título y texto
+            st.markdown("""
                 <div class="login-title">Humanizador Pro</div>
                 <div class="login-intro">
                     Bienvenido. Esta herramienta transforma textos generados por IA en textos naturales, auténticos y con verdadera voz humana.
                 </div>
-        """, unsafe_allow_html=True)
-        
-        # Caja de contraseña y BOTÓN DE INGRESAR
-        col1, col2, col3 = st.columns([1, 1.5, 1]) 
-        with col2:
+            """, unsafe_allow_html=True)
+            
+            # Caja de contraseña y botón
             st.text_input("Ingresa la contraseña para acceder", type="password", key="password_input")
             st.button("Ingresar", on_click=verify_password, use_container_width=True, type="primary")
-        
-        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-            st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
             
-        st.markdown('</div>', unsafe_allow_html=True)
+            if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+                st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
+
+        # Texto de derechos reservados al pie del inicio
+        st.markdown('<div class="footer-text">Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
+            
         return False
     else:
         return True
@@ -146,9 +138,7 @@ st.markdown('<div class="signature-container"><div class="signature-text">Elabor
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    # Logo pequeño en la barra lateral (ajustado a 60px)
-    url_logo = "https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png"
-    st.image(url_logo, width=60)
+    st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=60)
     
     st.markdown('<div class="sidebar-title">PANEL DE<br>CONTROL<span>.</span></div>', unsafe_allow_html=True)
     st.markdown("### Configuración")
@@ -157,7 +147,6 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    # TEXTOS CAMBIADOS: "Elige un modelo API"
     st.markdown("#### Elige un modelo API")
     
     opciones_modelos = {
@@ -273,4 +262,4 @@ if st.session_state["texto_humanizado"]:
     )
 
 # --- PIE DE PÁGINA (DERECHOS RESERVADOS) ---
-st.markdown('<div class="footer">Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer-text">Humanizadormanu derechos reservados</div>', unsafe_allow_html=True)
