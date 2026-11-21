@@ -773,9 +773,28 @@ html, body { overflow-x: clip; }
 .pie-firma p { font-size: var(--t-sm); color: var(--ink-soft); margin: 0; }
 .pie-firma .pie-autor { font-size: var(--t-base); color: var(--ink); font-weight: 500; }
 
+/* ---------- Tablet (iPad y Android hasta 1024 px): paneles uno debajo del otro ---------- */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+@media (max-width: 1024px) {
+    .st-key-paneles [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; row-gap: 2rem; }
+    .st-key-paneles [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        flex: 1 1 100% !important; width: 100% !important; min-width: 100% !important;
+    }
+    /* Los botones siguen lado a lado: Humanizar ancho, Limpiar angosto */
+    .st-key-botones [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; row-gap: 0; }
+    .st-key-botones [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        min-width: 0 !important; width: auto !important; flex: 1 1 0 !important;
+    }
+    .st-key-botones [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child { flex-grow: 3 !important; }
+    /* La hoja crece con el texto (sin doble barra de desplazamiento en pantallas táctiles) */
+    .hoja { height: auto; min-height: 220px; max-height: 75vh; }
+    .ritmo-fila { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+    .ritmo svg { margin-top: 0.5rem; width: 100%; max-width: 640px; height: auto; }
+}
+
 @media (max-width: 768px) {
     .block-container { padding: 1.5rem 1rem 2rem 1rem !important; }
-    .hoja { height: 340px; padding: 1.25rem 1.25rem; }
+    .hoja { padding: 1.25rem 1.25rem; }
     .ritmo { padding: 1.25rem; }
     .ritmo-fila { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
     .pie { flex-direction: column; align-items: flex-start; }
@@ -1418,7 +1437,8 @@ def procesar(texto_original, estado):
     return texto_limpio, modelo_final, avisos, auditoria, texto_base
 
 
-col1, col2 = st.columns(2, gap="large")
+paneles = st.container(key="paneles")
+col1, col2 = paneles.columns(2, gap="large")
 
 with col1:
     actual = st.session_state.get("input_original_key", "")
@@ -1432,7 +1452,7 @@ with col1:
         max_chars=MAX_CARACTERES, key="input_original_key",
         placeholder="Pega aquí el texto que quieres reescribir.",
     )
-    col_btn1, col_btn2 = st.columns([3, 1], gap="small")
+    col_btn1, col_btn2 = st.container(key="botones").columns([3, 1], gap="small")
     with col_btn1:
         refinar = st.button("Humanizar texto", width="stretch", type="primary")
     with col_btn2:
@@ -1539,7 +1559,11 @@ with col2:
                 ? navigator.clipboard.writeText(text) : Promise.reject();
             copiar.catch(function() {{
                 const ta = document.createElement('textarea');
-                ta.value = text; document.body.appendChild(ta); ta.select();
+                ta.value = text;
+                ta.setAttribute('readonly', '');                 // iOS: no abre el teclado
+                ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.fontSize = '16px';  // sin zoom
+                document.body.appendChild(ta);
+                ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);   // iOS necesita el rango
                 document.execCommand('copy'); document.body.removeChild(ta);
             }}).then(function() {{
                 btn.textContent = 'Copiado'; btn.classList.add('ok');
