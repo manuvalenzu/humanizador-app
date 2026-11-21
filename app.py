@@ -12,6 +12,7 @@ import hmac
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import html as html_lib
 import unicodedata
+import uuid
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wide")
@@ -76,6 +77,19 @@ class ProveedorNoDisponible(RuntimeError):
         self.pausa = pausa
 
 CLAVES = {pid: leer_secreto(p["clave"]) for pid, p in PROVEEDORES.items()}
+
+# Detectores con API pública. QuillBot y Grammarly no ofrecen API de detección: se revisan a mano.
+GPTZERO_API_KEY = leer_secreto("GPTZERO_API_KEY")
+COPYLEAKS_EMAIL = leer_secreto("COPYLEAKS_EMAIL")
+COPYLEAKS_API_KEY = leer_secreto("COPYLEAKS_API_KEY")
+RONDAS_DETECTOR = 3        # reescrituras como máximo tras medir (cada medición gasta créditos del detector)
+OBJETIVO_IA = 0.5          # se da por logrado cuando el peor detector marca menos de 0,5% (se muestra 0%)
+PARRAFOS_POR_RONDA = 8     # tope de párrafos que se reescriben en cada ronda
+
+# Temperatura de la redacción final: más alta = elección de palabras menos previsible
+TEMP_FINAL = 0.95
+# Variación mínima del largo de las oraciones (desviación / promedio). Un texto de persona suele pasar de 0,5
+RITMO_MINIMO = 0.50
 
 EXCLUIDOS = ("whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision", "audio",
              "compound", "allam", "realtime", "image", "transcribe", "search", "moderation", "ocr",
@@ -438,7 +452,19 @@ FRASES_VETADAS = [
     "sin precedentes", "de gran relevancia", "de suma importancia", "es posible afirmar", "resulta evidente",
     "cabe mencionar", "vale la pena", "trascendental", "ineludible", "multifacético", "complejo entramado",
     "en última instancia", "en este marco", "así pues", "por consiguiente", "asimismo", "no obstante",
+    # Muletillas que los detectores asocian a texto generado
+    "en la actualidad", "es esencial", "resulta fundamental", "resulta esencial", "en el ámbito de",
+    "a nivel global", "a gran escala", "una amplia gama", "un amplio abanico", "en gran medida",
+    "es innegable", "no cabe duda", "se ha convertido en", "ha cobrado relevancia", "pilar fundamental",
+    "en pocas palabras", "dicho de otro modo", "en términos generales", "de manera eficaz", "de manera efectiva",
 ]
+# Conectores de manual al inicio de la oración: uno suelto pasa, varios delatan
+CONECTORES_INICIO = (
+    "además", "sin embargo", "por lo tanto", "por tanto", "por ello", "por ende", "de este modo",
+    "de esta manera", "de esta forma", "en consecuencia", "finalmente", "en primer lugar", "en segundo lugar",
+    "por último", "de igual forma", "del mismo modo", "es decir", "en efecto", "ahora bien", "por su parte",
+    "en cuanto a", "respecto a", "con respecto a", "de hecho", "en suma", "así mismo", "adicionalmente",
+)
 PATRON_ENUMERACION = re.compile(
     r"\b[\wáéíóúñü]+(?: [\wáéíóúñü]+){0,2}, [\wáéíóúñü]+(?: [\wáéíóúñü]+){0,2},? (?:y|e) [\wáéíóúñü]+",
     re.IGNORECASE,
@@ -559,11 +585,23 @@ def auditar_texto(texto, referencia=None, partir=False):
         media = statistics.mean(largos)
         cv = statistics.pstdev(largos) / media if media else 0
         metricas["variacion_ritmo"] = round(cv, 2)
-        if cv < 0.40:
+        if cv < RITMO_MINIMO:
             problemas.append(
                 f"Ritmo demasiado parejo (las oraciones miden casi lo mismo, promedio {media:.0f} palabras). "
-                "Mezcla oraciones de 5 a 9 palabras con otras de 20 a 30."
+                "Mezcla oraciones de 4 a 9 palabras con otras de 22 a 32."
             )
+        # Tres oraciones seguidas de largo casi igual: el patrón que más pesa en los detectores
+        rachas = 0
+        for k in range(len(largos) - 2):
+            trio = largos[k:k + 3]
+            if min(trio) >= 10 and max(trio) - min(trio) <= 3:
+                problemas.append(
+                    f'Tres oraciones seguidas miden casi lo mismo ({trio[0]}, {trio[1]} y {trio[2]} palabras), '
+                    f'desde "{oraciones[k][:60]}...". Acorta una a menos de 9 palabras o une dos.'
+                )
+                rachas += 1
+                if rachas == 2:
+                    break
         cortas = sum(1 for x in largos if x <= 9)
         if cortas == 0:
             problemas.append("No hay ninguna oración corta. Agrega al menos dos de 5 a 9 palabras.")
@@ -596,6 +634,35 @@ def auditar_texto(texto, referencia=None, partir=False):
                 f"Por ejemplo estas: {ejemplos}"
             )
 
+    # Párrafos con ritmo plano: los detectores puntúan por párrafo y por oración, no solo el texto entero
+    planos = 0
+    for parrafo in dividir_parrafos(texto):
+        lp = [len(o.split()) for o in dividir_oraciones(parrafo)]
+        if len(lp) >= 4 and statistics.mean(lp) and statistics.pstdev(lp) / statistics.mean(lp) < 0.30:
+            problemas.append(
+                f'El párrafo que empieza con "{parrafo[:60]}..." tiene todas sus oraciones de largo parecido. '
+                "Deja una muy corta y otra larga dentro de ese mismo párrafo."
+            )
+            planos += 1
+            if planos == 2:
+                break
+
+    if len(oraciones) >= 4:
+        con_conector = [o for o in oraciones if _normalizar(o).lstrip('"¿¡(').startswith(
+            tuple(_normalizar(c) + s for c in CONECTORES_INICIO for s in (",", " ")))]
+        if len(con_conector) >= 2 and len(con_conector) / len(oraciones) > 0.12:
+            ejemplos = "; ".join(f'"{o[:45]}..."' for o in con_conector[:3])
+            problemas.append(
+                f"{len(con_conector)} oraciones abren con un conector de manual ({ejemplos}). "
+                "Deja uno como máximo: en las demás quita el conector o entra directo con el sujeto o el hecho."
+            )
+
+    if contar_palabras(texto) >= 150 and not re.search(r"[;:(?]", texto):
+        problemas.append(
+            "Toda la puntuación es coma y punto. Usa una o dos veces dos puntos, punto y coma, "
+            "un paréntesis o una pregunta, donde salga natural."
+        )
+
     if len(oraciones) >= 5:
         inicios = [o.split()[0].lower().strip(",.") for o in oraciones]
         for palabra in set(inicios):
@@ -609,6 +676,120 @@ def auditar_texto(texto, referencia=None, partir=False):
 
     metricas["problemas"] = len(problemas)
     return problemas, metricas
+
+# ==========================================
+# CAPA D: VERIFICACIÓN CON DETECTORES REALES
+# Mide el resultado en GPTZero y Copyleaks (los dos con API pública) y devuelve
+# el porcentaje de IA y las oraciones que cada uno marcó.
+# ==========================================
+def detectores_activos():
+    activos = []
+    if GPTZERO_API_KEY:
+        activos.append("GPTZero")
+    if COPYLEAKS_EMAIL and COPYLEAKS_API_KEY:
+        activos.append("Copyleaks")
+    return activos
+
+
+def medir_gptzero(texto):
+    """Devuelve (porcentaje de IA, oraciones marcadas)."""
+    headers = {"x-api-key": GPTZERO_API_KEY, "Content-Type": "application/json", "Accept": "application/json"}
+    payload = {"document": texto, "multilingual": True}
+    resp = requests.post("https://api.gptzero.me/v2/predict/text", headers=headers, json=payload, timeout=(10, 60))
+    if resp.status_code in (400, 422) and "multilingual" in resp.text.lower():
+        payload.pop("multilingual")
+        resp = requests.post("https://api.gptzero.me/v2/predict/text", headers=headers, json=payload, timeout=(10, 60))
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:160]}")
+    doc = (resp.json().get("documents") or [{}])[0]
+    probs = doc.get("class_probabilities") or {}
+    if "human" in probs:
+        ia = 100 * (1 - float(probs["human"]))        # cuenta "IA" y también "mixto"
+    else:
+        ia = 100 * float(doc.get("completely_generated_prob") or 0)
+    frases = [s.get("sentence", "") for s in doc.get("sentences") or []
+              if s.get("highlight_sentence_for_ai") or float(s.get("generated_prob") or 0) >= 0.5]
+    return ia, [f for f in frases if f.strip()]
+
+
+@st.cache_data(ttl=36 * 3600, show_spinner=False)
+def _token_copyleaks(email, clave):
+    resp = requests.post("https://id.copyleaks.com/v3/account/login/api",
+                         json={"email": email, "key": clave}, timeout=20)
+    if resp.status_code != 200:
+        raise RuntimeError(f"no se pudo iniciar sesión (HTTP {resp.status_code})")
+    return resp.json()["access_token"]
+
+
+def medir_copyleaks(texto):
+    """Devuelve (porcentaje de IA, tramos marcados). Copyleaks exige al menos 255 caracteres."""
+    if len(texto) < 255:
+        raise RuntimeError("el texto tiene menos de 255 caracteres, el mínimo que acepta")
+    resp = None
+    for intento in range(2):
+        token = _token_copyleaks(COPYLEAKS_EMAIL, COPYLEAKS_API_KEY)
+        resp = requests.post(
+            f"https://api.copyleaks.com/v2/writer-detector/hp-{uuid.uuid4().hex[:24]}/check",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"text": texto}, timeout=(10, 60),
+        )
+        if resp.status_code == 401 and intento == 0:
+            _token_copyleaks.clear()      # el token venció: se pide otro
+            continue
+        break
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:160]}")
+    datos = resp.json()
+    tramos, marcados = [], 0
+    for r in datos.get("results") or []:
+        if r.get("classification") != 2:              # 2 = IA, 1 = persona
+            continue
+        for m in r.get("matches") or []:
+            chars = (m.get("text") or {}).get("chars") or {}
+            for inicio, largo in zip(chars.get("starts") or [], chars.get("lengths") or []):
+                tramos.append(texto[inicio:inicio + largo])
+                marcados += largo
+    resumen = datos.get("summary") or {}
+    if "ai" in resumen:
+        ia = 100 * float(resumen["ai"])
+    else:
+        ia = 100 * marcados / max(1, len(texto))
+    return min(100.0, ia), [t for t in tramos if t.strip()]
+
+
+def medir_detectores(texto):
+    """Una medición por detector conectado: [{nombre, ia, frases}] o [{nombre, error}]."""
+    mediciones = []
+    for nombre, funcion in (("GPTZero", medir_gptzero), ("Copyleaks", medir_copyleaks)):
+        if nombre not in detectores_activos():
+            continue
+        try:
+            ia, frases = funcion(texto)
+            mediciones.append({"nombre": nombre, "ia": round(max(0.0, ia), 1), "frases": frases})
+        except Exception as e:
+            mediciones.append({"nombre": nombre, "error": str(e)[:200]})
+    return mediciones
+
+
+def _clave_texto(t):
+    return re.sub(r"\s+", " ", _normalizar(t)).strip()
+
+
+def oraciones_marcadas(parrafo, frases):
+    """Oraciones de un párrafo que coinciden con algún tramo marcado por un detector."""
+    claves = set()
+    for f in frases:
+        for trozo in (dividir_oraciones(f) or [f]):
+            c = _clave_texto(trozo)
+            if len(c.split()) >= 4:
+                claves.add(c[:60])
+    marcadas = []
+    for o in dividir_oraciones(parrafo):
+        co = _clave_texto(o)
+        if any(c in co or co[:60] in c for c in claves):
+            marcadas.append(o)
+    return marcadas
+
 
 # ==========================================
 # DISEÑO: tokens y estilos (todo color y fuente pasa por :root)
@@ -857,7 +1038,7 @@ def fila_ritmo(nombre, texto, clase):
     _, m = auditar_texto(texto)
     n = m.get("oraciones", 0)
     cv = m.get("variacion_ritmo", 0.0)
-    lectura = "ritmo parejo" if cv < 0.40 else "ritmo variado"
+    lectura = "ritmo parejo" if cv < RITMO_MINIMO else "ritmo variado"
     dato = f"{n} oraciones, variación {str(cv).replace('.', ',')}, {lectura}"
     return (f'<div class="ritmo-fila"><div><p class="ritmo-nombre">{nombre}</p>'
             f'<p class="ritmo-dato">{dato}</p></div>{svg_ritmo(texto, clase)}</div>')
@@ -998,12 +1179,33 @@ with st.sidebar:
         value=True,
         help="Capa C: revisa ritmo, muletillas, enumeraciones, gerundios, inicios y cierre, y corrige hasta 3 veces.",
     )
+    det_activos = detectores_activos()
+    usar_detectores = st.toggle(
+        "Verificar con GPTZero y Copyleaks",
+        value=bool(det_activos),
+        disabled=not det_activos,
+        help="Capa D: mide el resultado en los detectores conectados y reescribe solo las oraciones que marcan, "
+             f"hasta {RONDAS_DETECTOR} rondas. Cada medición gasta créditos de tu cuenta del detector. "
+             "QuillBot y Grammarly no tienen API: esos dos se revisan a mano.",
+    )
+    if det_activos:
+        st.caption("Detectores conectados: " + " y ".join(det_activos) + ".")
+    else:
+        st.caption("Sin detectores conectados. Agrega GPTZERO_API_KEY, o COPYLEAKS_EMAIL y COPYLEAKS_API_KEY, en Secretos.")
+    muestra_estilo = st.text_area(
+        "Muestra de tu propia escritura (opcional)",
+        height=140, max_chars=3000, key="muestra_estilo",
+        placeholder="Pega 2 o 3 párrafos escritos por ti, sin IA.",
+        help="La redacción final imita el ritmo, el vocabulario y la puntuación de esta muestra. "
+             "Es lo que más acerca el resultado a un texto escrito por ti.",
+    ).strip()
 
     with st.expander("Cómo agregar más modelos"):
         st.markdown(
             "En Streamlit Cloud, abre **Settings → Secrets** y agrega las claves que tengas:\n\n"
             + "\n".join(f"- `{PROVEEDORES[pid]['clave']}` para {nombres[pid]}" for pid in ORDEN_CALIDAD)
             + "\n\nPara fijar un modelo concreto, agrega por ejemplo `OPENAI_MODEL = \"nombre-del-modelo\"`."
+            + "\n\nPara medir el resultado en detectores reales, agrega `GPTZERO_API_KEY`, o `COPYLEAKS_EMAIL` y `COPYLEAKS_API_KEY`."
         )
 
     st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
@@ -1103,6 +1305,10 @@ REGLAS DE ESTILO (aplícalas sin acortar el texto):
 6. RITMO IRREGULAR: alterna sin patrón fijo frases cortas (4 a 8 palabras) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas.
 7. VOCABULARIO: prefiere la palabra común sobre la culta ("usar" en vez de "utilizar", "hacer" en vez de "llevar a cabo", "empezar" en vez de "iniciar").
 8. FORMATO: solo prosa en párrafos separados por una línea en blanco. Sin rayas largas (— o –), sin negritas, sin listas, sin títulos y sin comillas curvas.
+9. PUNTUACIÓN VARIADA: no todo es coma y punto. Usa alguna vez dos puntos, punto y coma, un paréntesis corto o una pregunta que el mismo texto responde, donde salga natural.
+10. PALABRA CONCRETA, NO LA PRIMERA QUE SALE: entre dos formas correctas de decir algo, elige la más específica y menos de plantilla ("los nobles vendieron sus tierras" en vez de "se produjeron cambios en la propiedad"). Repite una palabra si es la justa; no la cambies por un sinónimo solo para variar.
+11. SIN MOLDE FIJO: que los párrafos no sigan todos el mismo esquema (afirmación, explicación, consecuencia). Alguna oración puede empezar con "Y" o "Pero"; alguna puede ser una frase breve sin verbo. No redondees cada frase: un texto de persona tiene oraciones secas junto a otras más sueltas.
+12. CONECTORES AL INICIO: como máximo una oración de todo el texto puede abrir con "Además", "Sin embargo", "Por lo tanto", "Por ello", "De este modo", "Finalmente" o parecidos. Las demás entran directo con el sujeto o el hecho.
 
 Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
 """
@@ -1125,6 +1331,33 @@ Corrige SOLO esos problemas en el TEXTO y deja intacto todo lo demás.
 Formato: solo prosa en párrafos separados por una línea en blanco, sin rayas largas, sin negritas, sin listas.
 Devuelve ÚNICAMENTE el texto corregido.
 """
+
+
+PROMPT_DETECTOR = """
+Eres un editor que retoca a mano un párrafo en español. Un detector de texto generado por IA marcó las ORACIONES MARCADAS: su redacción es demasiado previsible.
+
+QUÉ DEBES HACER:
+1. Reescribe desde cero cada oración marcada: otra construcción sintáctica, otro orden de las piezas, otro verbo principal y otro largo. Cambiar sinónimos no sirve.
+2. Puedes partir una oración marcada en dos (una de ellas de menos de 9 palabras) o unirla con la vecina. Evita que dos oraciones seguidas midan parecido.
+3. Elige la palabra concreta y cotidiana en vez de la genérica. Sujeto y verbo claros, sin pasiva con "se" ni nominalizaciones.
+4. No abras con conectores de manual ("Además", "Sin embargo", "Por lo tanto", "Asimismo"). Sin coma + gerundio al final, sin enumeraciones de tres elementos, sin frases de importancia ("es fundamental", "cabe destacar", "juega un papel").
+5. Las oraciones NO marcadas quedan casi iguales: solo ajusta el enlace con las que cambiaste.
+6. PROHIBIDO RESUMIR: conserva todas las ideas y TAL CUAL las fechas, cifras, nombres, instituciones y citas. La extensión del párrafo queda entre 95% y 115% de la actual.
+7. No agregues información ni opiniones nuevas.
+
+Formato: un solo párrafo de prosa, sin rayas largas, sin negritas, sin listas y sin comillas curvas.
+Devuelve ÚNICAMENTE el párrafo reescrito.
+"""
+
+
+def con_muestra(prompt, muestra):
+    """Agrega al prompt la muestra de escritura del usuario, si la hay."""
+    if not muestra or contar_palabras(muestra) < 40:
+        return prompt
+    return (prompt + "\nMUESTRA DE ESTILO (escrita por la persona que firma el texto). Imita su voz: el largo y el ritmo de "
+            "sus oraciones, su vocabulario, su puntuación y la forma en que une las ideas. Si la muestra contradice "
+            "alguna regla de estilo anterior, manda la muestra. No copies su contenido ni sus datos, y no la "
+            "menciones.\n<<<\n" + muestra + "\n>>>\n")
 
 
 def instrucciones_de_medida(original, partir=False):
@@ -1162,6 +1395,8 @@ def armar_plan():
         plan[paso] = [principal] + [p for p in respaldo if p != principal]
     for paso in ("final", "correccion"):
         plan[paso] = [final] + [p for p in respaldo if p != final]
+    # Ajuste por detectores: primero otra familia de modelos, para no repetir la huella de la redacción final
+    plan["detector"] = [p for p in disponibles if p != final] + [final]
     return plan
 
 
@@ -1176,7 +1411,7 @@ def pausar_proveedor(pid, segundos):
 def generar(system_prompt, texto, temperature, paso, plan, avisos, usados, tiempos):
     """Prueba los proveedores del paso en orden, saltando los que están en pausa."""
     errores = []
-    limite = TIEMPO_MAXIMO["final"] if paso in ("final", "correccion") else TIEMPO_MAXIMO["intermedio"]
+    limite = TIEMPO_MAXIMO["final"] if paso in ("final", "correccion", "detector") else TIEMPO_MAXIMO["intermedio"]
     inicio = time.monotonic()
     disponibles = [p for p in plan[paso] if not proveedor_en_pausa(p)]
     # Si todos están en pausa, se intenta igual con el orden normal
@@ -1283,7 +1518,8 @@ def procesar_bloque(texto_base, plan, partir, avisos, opciones):
     if not opciones["profundo"]:
         # MODO RÁPIDO: una sola llamada que reescribe, reestructura y limpia a la vez
         entrada = f"{medida}\n\nTEXTO A REESCRIBIR:\n{texto_base}"
-        texto_generado, modelo_final = generar(PROMPT_RAPIDO, entrada, 0.85, "final", plan, avisos, usados, tiempos)
+        texto_generado, modelo_final = generar(con_muestra(PROMPT_RAPIDO, opciones.get("muestra")), entrada,
+                                               TEMP_FINAL, "final", plan, avisos, usados, tiempos)
         texto_generado, _ = clean_text(texto_generado)
         return revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos)
 
@@ -1310,7 +1546,8 @@ def procesar_bloque(texto_base, plan, partir, avisos, opciones):
 
     # REDACCIÓN FINAL
     entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
-    texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.85, "final", plan, avisos, usados, tiempos)
+    texto_generado, modelo_final = generar(con_muestra(PROMPT_FINAL, opciones.get("muestra")), entrada_final,
+                                           TEMP_FINAL, "final", plan, avisos, usados, tiempos)
     texto_generado, _ = clean_text(texto_generado)
     return revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos)
 
@@ -1330,7 +1567,7 @@ def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, parti
         lista = "\n".join(f"- {p}" for p in problemas)
         try:
             corregido, _ = generar(
-                PROMPT_CORRECCION,
+                con_muestra(PROMPT_CORRECCION, opciones.get("muestra")),
                 f"{medida}\n\nPROBLEMAS DETECTADOS:\n{lista}\n\nORIGINAL:\n{texto_base}\n\nTEXTO:\n{texto_generado}",
                 0.7, "correccion", plan, avisos, usados, tiempos,
             )
@@ -1349,6 +1586,98 @@ def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, parti
     return texto_generado, modelo_final, usados, tiempos, len(problemas_iniciales)
 
 
+def reescribir_parrafo_marcado(parrafo, marcadas, plan, opciones, avisos, usados, tiempos):
+    """Reescribe un párrafo marcado por un detector. Si pierde contenido, devuelve el párrafo sin cambios."""
+    lista = "\n".join(f"- {o}" for o in marcadas) if marcadas else "- (todo el párrafo)"
+    entrada = (f"El párrafo tiene {contar_palabras(parrafo)} palabras.\n\nORACIONES MARCADAS:\n{lista}\n\n"
+               f"PÁRRAFO:\n{parrafo}")
+    try:
+        nuevo, _ = generar(con_muestra(PROMPT_DETECTOR, opciones.get("muestra")), entrada, TEMP_FINAL,
+                           "detector", plan, avisos, usados, tiempos)
+    except Exception:
+        return parrafo
+    nuevo, _ = clean_text(nuevo)
+    nuevo = " ".join(dividir_parrafos(nuevo))          # sigue siendo un solo párrafo
+    largo_ok = 0.88 * contar_palabras(parrafo) <= contar_palabras(nuevo) <= 1.30 * contar_palabras(parrafo)
+    if not nuevo or not largo_ok or datos_faltantes(parrafo, nuevo):
+        return parrafo
+    return nuevo
+
+
+def ajustar_con_detectores(texto, plan, opciones, avisos, usados, tiempos, avanzar):
+    """CAPA D: mide, reescribe solo lo marcado y vuelve a medir. Se queda con la versión de menor puntaje."""
+    historial, mejor = [], None
+
+    def peor_de(mediciones):
+        validas = [m["ia"] for m in mediciones if "ia" in m]
+        return max(validas) if validas else None
+
+    for ronda in range(RONDAS_DETECTOR + 1):
+        avanzar(f"Midiendo en {' y '.join(detectores_activos())} (medición {ronda + 1})")
+        mediciones = medir_detectores(texto)
+        peor = peor_de(mediciones)
+        if peor is None:
+            # Ningún detector respondió: no hay con qué ajustar
+            if mejor is None:
+                mejor = (None, texto, mediciones)
+            break
+        historial.append(peor)
+        if mejor is None or mejor[0] is None or peor < mejor[0]:
+            mejor = (peor, texto, mediciones)
+        if peor < OBJETIVO_IA or ronda == RONDAS_DETECTOR:
+            break
+
+        frases = [f for m in mediciones if m.get("ia", 0) >= OBJETIVO_IA for f in m.get("frases", [])]
+        parrafos = dividir_parrafos(texto)
+        candidatos = []
+        for i, p in enumerate(parrafos):
+            if es_titulo(p):
+                continue
+            marcadas = oraciones_marcadas(p, frases)
+            if marcadas:
+                candidatos.append((i, marcadas))
+        if not candidatos:
+            # El detector dio puntaje pero no señaló oraciones: se retocan los párrafos de ritmo más plano
+            def planitud(p):
+                lp = [len(o.split()) for o in dividir_oraciones(p)]
+                return statistics.pstdev(lp) / statistics.mean(lp) if len(lp) >= 2 else 0.0
+            orden = sorted((i for i, p in enumerate(parrafos) if not es_titulo(p)), key=lambda i: planitud(parrafos[i]))
+            candidatos = [(i, []) for i in orden]
+        candidatos = candidatos[:PARRAFOS_POR_RONDA]
+
+        # Cada ronda empieza por un modelo distinto
+        plan_ronda = dict(plan)
+        lista = plan["detector"]
+        k = ronda % len(lista)
+        plan_ronda["detector"] = lista[k:] + lista[:k]
+
+        avanzar(f"Reescribiendo {len(candidatos)} párrafo(s) marcados (ronda {ronda + 1} de {RONDAS_DETECTOR})")
+        with ThreadPoolExecutor(max_workers=BLOQUES_EN_PARALELO) as pool:
+            nuevos = list(pool.map(
+                lambda c: reescribir_parrafo_marcado(parrafos[c[0]], c[1], plan_ronda, opciones, avisos, usados, tiempos),
+                candidatos,
+            ))
+        cambiados = 0
+        for (i, _), nuevo in zip(candidatos, nuevos):
+            if nuevo != parrafos[i]:
+                parrafos[i] = nuevo
+                cambiados += 1
+        if not cambiados:
+            break
+        texto, _ = clean_text("\n\n".join(parrafos))
+
+    peor, texto_final, mediciones = mejor
+    info = {"mediciones": [{k: v for k, v in m.items() if k != "frases"} for m in mediciones],
+            "historial": historial, "rondas": max(0, len(historial) - 1)}
+    for m in mediciones:
+        if "error" in m:
+            avisos.append(f"{m['nombre']} no respondió ({m['error'][:140]}).")
+        elif m["ia"] >= OBJETIVO_IA:
+            avisos.append(f"{m['nombre']} todavía marca {round(m['ia'])}% de IA tras {info['rondas']} ronda(s) de ajuste. "
+                          "Cambia a mano las frases que señale o vuelve a pulsar Humanizar texto.")
+    return texto_final, info
+
+
 def procesar(texto_original, estado):
     """Corre todo el flujo y devuelve (texto_final, modelo, avisos, auditoria, texto_base)."""
     avisos = []
@@ -1359,7 +1688,8 @@ def procesar(texto_original, estado):
         estado.update(label=f"{texto} ({round(time.monotonic() - inicio_total)} s)")
 
     partir = usar_estructura
-    opciones = {"retro": usar_retrotraduccion, "auditoria": usar_auditoria, "profundo": modo_profundo}
+    opciones = {"retro": usar_retrotraduccion, "auditoria": usar_auditoria, "profundo": modo_profundo,
+                "muestra": muestra_estilo}
 
     avanzar("Limpiando caracteres ocultos y formato")
     texto_base, _ = clean_text(texto_original)
@@ -1427,11 +1757,22 @@ def procesar(texto_original, estado):
             tiempos[k] = max(tiempos.get(k, 0), v)   # en paralelo cuenta el bloque más lento
 
     texto_limpio, _ = clean_text("\n\n".join(partes))
+
+    # CAPA D: medir en los detectores conectados y reescribir solo lo que marcan
+    info_detectores = None
+    if usar_detectores and detectores_activos() and not (fallidos and len(fallidos) == total):
+        try:
+            texto_limpio, info_detectores = ajustar_con_detectores(
+                texto_limpio, plan, opciones, avisos, usados, tiempos, avanzar)
+        except Exception as e_det:
+            avisos.append(f"No se pudo verificar con los detectores ({str(e_det)[:140]}).")
+
     problemas_finales, metricas = auditar_texto(texto_limpio, texto_base, partir)
     metricas["palabras_original"] = contar_palabras(texto_base)
     metricas["palabras_resultado"] = contar_palabras(texto_limpio)
     metricas["bloques"] = total
     auditoria = {"antes": antes, "despues": problemas_finales, "metricas": metricas, "modelos": usados,
+                 "detectores": info_detectores,
                  "tiempos": {k: round(v, 1) for k, v in tiempos.items()},
                  "tiempo_total": round(time.monotonic() - inicio_total, 1)}
     return texto_limpio, modelo_final, avisos, auditoria, texto_base
@@ -1612,7 +1953,7 @@ if st.session_state["texto_humanizado"] and aud:
         extension = ""
     usados = aud.get("modelos") or {}
     etiquetas = {"ingles": "al inglés", "espanol": "vuelta al español", "estructura": "estructura",
-                 "final": "redacción final", "correccion": "corrección"}
+                 "final": "redacción final", "correccion": "corrección", "detector": "ajuste por detectores"}
     if usados:
         tiempos_aud = aud.get("tiempos") or {}
         modelos_txt = "; ".join(
@@ -1622,6 +1963,23 @@ if st.session_state["texto_humanizado"] and aud:
         n_bloques = (aud.get("metricas") or {}).get("bloques", 1)
         en_bloques = f" Se procesó en {n_bloques} bloques en paralelo; cada tiempo es el del bloque más lento." if n_bloques > 1 else ""
         extension += f'<p class="ritmo-intro">Modelos y tiempos: {modelos_txt}. Total: {formato_tiempo(aud.get("tiempo_total", 0))}.{en_bloques}</p>'
+    info_det = aud.get("detectores")
+    if info_det:
+        partes_det = []
+        for m in info_det["mediciones"]:
+            if "ia" in m:
+                partes_det.append(f"{html_lib.escape(m['nombre'])}: {round(m['ia'])}% de IA")
+            else:
+                partes_det.append(f"{html_lib.escape(m['nombre'])}: sin respuesta")
+        camino = ""
+        if len(info_det["historial"]) > 1:
+            camino = (" Peor puntaje en cada medición: "
+                      + ", ".join(f"{round(h)}%" for h in info_det["historial"]) + ".")
+        extension += (f'<p class="ritmo-intro">Detectores: {"; ".join(partes_det)}.{camino} '
+                      "QuillBot y Grammarly no tienen API: pega el texto en sus páginas para revisarlos.</p>")
+    else:
+        extension += ('<p class="ritmo-intro">Detectores: sin medir. Conecta GPTZero o Copyleaks en Secretos '
+                      "para ver el porcentaje real y ajustar el texto solo.</p>")
     filas = (fila_ritmo("Original", fuente, "barra-orig") if fuente else "") + \
         fila_ritmo("Humanizado", st.session_state["texto_humanizado"], "barra-hum")
     st.markdown(
