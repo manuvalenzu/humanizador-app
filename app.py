@@ -3,6 +3,7 @@ from google import genai
 from google.genai import types
 import streamlit.components.v1 as components
 import requests
+import time
 import json
 import re
 import unicodedata
@@ -14,17 +15,17 @@ st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wid
 # LEE LAS CLAVES DESDE LOS SECRETOS DE STREAMLIT
 # ==========================================
 try:
-    MI_API_KEY = st.secrets["GEMINI_API_KEY"]
+    MI_API_KEY = st.secrets["GEMINI_API_KEY"].strip()
 except Exception:
     MI_API_KEY = None
 
 try:
-    MI_GROQ_KEY = st.secrets["GROQ_API_KEY"]
+    MI_GROQ_KEY = st.secrets["GROQ_API_KEY"].strip()
 except Exception:
     MI_GROQ_KEY = None
 
 # ==========================================
-# CLIENTE LIGERO PARA LLAMA 3.3 (GROQ API)
+# CLIENTE LIGERO PARA LLAMA (GROQ API) CON RESPALDO DE MODELOS
 # ==========================================
 def llamar_llama_groq(api_key, system_prompt, user_text, temperature=0.95):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -32,18 +33,52 @@ def llamar_llama_groq(api_key, system_prompt, user_text, temperature=0.95):
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ],
+    modelos_groq = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    ultimo_error = ""
+
+    for modelo in modelos_groq:
+        payload = {
+            "model": modelo,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            "temperature": temperature,
+            "top_p": 0.95,
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=45)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"]
+        ultimo_error = f"Groq ({modelo}) HTTP {resp.status_code}: {resp.text[:200]}"
+
+    raise RuntimeError(ultimo_error)
+
+# ==========================================
+# LLAMADA A GEMINI CON REINTENTO ANTE ERRORES TEMPORALES (503/429)
+# ==========================================
+def llamar_gemini(client, contents, system_instruction, temperature=1.0, top_p=0.95, top_k=None):
+    config_kwargs = {
+        "system_instruction": system_instruction,
         "temperature": temperature,
-        "top_p": 0.95,
+        "top_p": top_p,
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=45)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    if top_k is not None:
+        config_kwargs["top_k"] = top_k
+
+    ultimo_error = None
+    for intento in range(2):
+        try:
+            resp = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
+            return resp.text
+        except Exception as e:
+            ultimo_error = e
+            if intento == 0:
+                time.sleep(2)
+    raise ultimo_error
 
 # ==========================================
 # CAPA A: LÓGICA DE LIMPIEZA (clean_marks + regla §8 de Humanizer)
@@ -275,11 +310,11 @@ with st.sidebar:
     
     if not MI_API_KEY:
         st.warning("⚠️ Falta GEMINI_API_KEY en Secretos.")
-        MI_API_KEY = st.text_input("API Key de Gemini", type="password")
+        MI_API_KEY = st.text_input("API Key de Gemini", type="password").strip()
 
     if not MI_GROQ_KEY:
         st.info("💡 Agrega GROQ_API_KEY para activar Llama 3.3 en la Capa B.")
-        MI_GROQ_KEY = st.text_input("API Key de Groq (Opcional)", type="password")
+        MI_GROQ_KEY = st.text_input("API Key de Groq (Opcional)", type="password").strip()
     
     st.markdown('<div class="tono-label">Motor activo:</div>', unsafe_allow_html=True)
     if MI_GROQ_KEY:
@@ -364,33 +399,25 @@ with col_btn1:
                     Devuelve SOLO el texto reescrito.
                     """
 
-                    # 1. CAPA B: RUPTURA ESTADÍSTICA (Con Llama 3.3 si hay GROQ_API_KEY, si no con Gemini)
+                    # 1. CAPA B: RUPTURA ESTADÍSTICA (Llama en Groq con respaldo automático a Gemini)
+                    borrador = None
                     if MI_GROQ_KEY:
+                        try:
+                            if usar_retrotraduccion:
+                                texto_en = llamar_llama_groq(MI_GROQ_KEY, prompt_en, texto_base, temperature=0.7)
+                                borrador = llamar_llama_groq(MI_GROQ_KEY, prompt_es, texto_en, temperature=0.95)
+                            else:
+                                borrador = llamar_llama_groq(MI_GROQ_KEY, prompt_parafrasis, texto_base, temperature=1.0)
+                        except Exception as e_groq:
+                            st.warning(f"⚠️ Groq falló ({e_groq}). Continuando con Gemini como respaldo.")
+                            borrador = None
+
+                    if borrador is None:
                         if usar_retrotraduccion:
-                            texto_en = llamar_llama_groq(MI_GROQ_KEY, prompt_en, texto_base, temperature=0.7)
-                            borrador = llamar_llama_groq(MI_GROQ_KEY, prompt_es, texto_en, temperature=0.95)
+                            texto_en = llamar_gemini(client, texto_base, prompt_en, temperature=0.7)
+                            borrador = llamar_gemini(client, texto_en, prompt_es, temperature=0.95)
                         else:
-                            borrador = llamar_llama_groq(MI_GROQ_KEY, prompt_parafrasis, texto_base, temperature=1.0)
-                    else:
-                        if usar_retrotraduccion:
-                            resp_en = client.models.generate_content(
-                                model="gemini-3.6-flash",
-                                contents=texto_base,
-                                config=types.GenerateContentConfig(system_instruction=prompt_en, temperature=0.7)
-                            )
-                            resp_borrador = client.models.generate_content(
-                                model="gemini-3.6-flash",
-                                contents=resp_en.text,
-                                config=types.GenerateContentConfig(system_instruction=prompt_es, temperature=0.95, top_p=0.95)
-                            )
-                            borrador = resp_borrador.text
-                        else:
-                            resp_borrador = client.models.generate_content(
-                                model="gemini-3.6-flash",
-                                contents=texto_base,
-                                config=types.GenerateContentConfig(system_instruction=prompt_parafrasis, temperature=1.0, top_p=0.95)
-                            )
-                            borrador = resp_borrador.text
+                            borrador = llamar_gemini(client, texto_base, prompt_parafrasis, temperature=1.0)
 
                     # 2. AUDITORÍA Y REESCRITURA HUMANIZER (Gemini)
                     prompt_humanizer = """
@@ -412,18 +439,14 @@ with col_btn1:
                     Devuelve ÚNICAMENTE el texto final limpio, sin saludos ni explicaciones.
                     """
 
-                    response = client.models.generate_content(
-                        model="gemini-3.6-flash",
-                        contents=borrador,
-                        config=types.GenerateContentConfig(
-                            system_instruction=prompt_humanizer,
-                            temperature=1.05,
-                            top_p=0.95,
-                            top_k=64,
-                        )
+                    texto_generado = llamar_gemini(
+                        client,
+                        borrador,
+                        prompt_humanizer,
+                        temperature=1.05,
+                        top_p=0.95,
+                        top_k=64,
                     )
-                    
-                    texto_generado = response.text
                     
                     # 3. CAPA A EN SALIDA: Limpieza final determinista
                     texto_limpio, reporte_limpieza = clean_text(
@@ -438,8 +461,7 @@ with col_btn1:
                     st.rerun() 
                     
                 except Exception as e:
-                    st.error("Ocurrió un error al procesar el texto. Revisa tus API Keys o intenta de nuevo en unos minutos.")
-                    print(f"Error técnico: {e}")
+                    st.error(f"Error técnico detallado: {e}")
 
 with col_btn2:
     st.button("Limpiar Textos", on_click=limpiar_textos, use_container_width=True)
