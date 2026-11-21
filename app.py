@@ -6,6 +6,7 @@ import requests
 import time
 import json
 import re
+import hmac
 import unicodedata
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
@@ -24,8 +25,27 @@ try:
 except Exception:
     MI_GROQ_KEY = None
 
+def leer_secreto(nombre, defecto=None):
+    """Lee un secreto sin romper la app si no existe secrets.toml."""
+    try:
+        valor = st.secrets.get(nombre, defecto)
+        return valor.strip() if isinstance(valor, str) else valor
+    except Exception:
+        return defecto
+
+# Modelo configurable desde Secretos (GEMINI_MODEL) para no tener que tocar el código
+GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-3.6-flash")
+
+def quitar_razonamiento(texto):
+    """Algunos modelos de Groq (qwen3, deepseek-r1) devuelven su razonamiento entre <think>...</think>."""
+    if not texto:
+        return ""
+    texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)
+    texto = re.sub(r"^.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)  # <think> sin apertura
+    return texto.strip()
+
 # ==========================================
-# AUTO-DETECCIÓN DE MODELOS ACTIVOS EN GROQ
+# AUTO-DETECCIÓN DE MODELOS ACTIVOS EN GROQ (SOLUCIÓN DEFINITIVA)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def obtener_modelos_groq_activos(api_key):
@@ -35,17 +55,23 @@ def obtener_modelos_groq_activos(api_key):
     resp.raise_for_status()
     data = resp.json().get("data", [])
 
-    excluidos = ("whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision", "audio")
+    # "compound" son agentes con búsqueda web/herramientas: alteran el texto, no sirven para traducir
+    excluidos = ("whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision",
+                 "audio", "compound", "allam")
     candidatos = []
     for item in data:
         mid = item.get("id", "")
         low = mid.lower()
-        if mid and not any(x in low for x in excluidos):
+        if mid and item.get("active", True) and not any(x in low for x in excluidos):
             candidatos.append(mid)
 
-    prioridades = ("llama-4", "llama-3.3", "llama-3", "qwen", "deepseek", "gpt-oss", "kimi", "mistral", "gemma")
+    # Ordena priorizando modelos grandes; los pequeños ("8b", "instant") quedan al final
+    prioridades = ("gpt-oss-120b", "llama-3.3-70b", "kimi", "llama-4-maverick", "qwen", "llama-4",
+                   "deepseek", "gpt-oss", "mistral", "llama-3", "gemma")
     def puntaje(mid):
         low = mid.lower()
+        if "8b" in low or "instant" in low:
+            return len(prioridades) + 1
         for idx, pref in enumerate(prioridades):
             if pref in low:
                 return idx
@@ -54,7 +80,7 @@ def obtener_modelos_groq_activos(api_key):
     candidatos.sort(key=puntaje)
     return candidatos
 
-def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.05):
+def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=0.95):
     modelos = obtener_modelos_groq_activos(api_key)
     if not modelos:
         raise RuntimeError("No se encontraron modelos de chat activos en tu cuenta de Groq.")
@@ -66,7 +92,7 @@ def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.05):
     }
 
     ultimo_error = ""
-    for modelo in modelos[:3]:
+    for modelo in modelos[:3]:  # Prueba hasta los 3 mejores modelos activos
         payload = {
             "model": modelo,
             "messages": [
@@ -75,12 +101,23 @@ def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.05):
             ],
             "temperature": temperature,
             "top_p": 0.95,
-            "frequency_penalty": 0.25,
-            "presence_penalty": 0.2,
         }
-        resp = requests.post(url, headers=headers, json=payload, timeout=45)
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=45)
+        except requests.RequestException as e:
+            # Un timeout en un modelo no debe impedir probar el siguiente
+            ultimo_error = f"Groq ({modelo}) sin respuesta: {e}"
+            continue
         if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"], modelo
+            try:
+                contenido = resp.json()["choices"][0]["message"].get("content") or ""
+            except (ValueError, KeyError, IndexError):
+                contenido = ""
+            contenido = quitar_razonamiento(contenido)
+            if contenido:
+                return contenido, modelo
+            ultimo_error = f"Groq ({modelo}) devolvió una respuesta vacía."
+            continue
         ultimo_error = f"Groq ({modelo}) HTTP {resp.status_code}: {resp.text[:200]}"
 
     raise RuntimeError(ultimo_error)
@@ -88,28 +125,28 @@ def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.05):
 # ==========================================
 # LLAMADA A GEMINI CON REINTENTO ANTE ERRORES TEMPORALES
 # ==========================================
-def llamar_gemini(client, contents, system_instruction, temperature=0.95, top_p=0.95, top_k=None):
-    config_kwargs = {
-        "system_instruction": system_instruction,
-        "temperature": temperature,
-        "top_p": top_p,
-    }
-    if top_k is not None:
-        config_kwargs["top_k"] = top_k
+def llamar_gemini(client, contents, system_instruction):
+    # Gemini 3.6 Flash ya no usa temperature / top_p / top_k (Google pide quitarlos),
+    # así que solo se envía la instrucción de sistema.
+    config = types.GenerateContentConfig(system_instruction=system_instruction)
 
     ultimo_error = None
     for intento in range(2):
         try:
             resp = client.models.generate_content(
-                model="gemini-3.6-flash",
+                model=GEMINI_MODEL,
                 contents=contents,
-                config=types.GenerateContentConfig(**config_kwargs),
+                config=config,
             )
-            return resp.text
+            texto = (resp.text or "").strip()
+            if texto:
+                return texto
+            # Respuesta vacía (bloqueo de seguridad o corte): se reintenta
+            ultimo_error = RuntimeError("Gemini devolvió una respuesta vacía (posible bloqueo de contenido).")
         except Exception as e:
             ultimo_error = e
-            if intento == 0:
-                time.sleep(2)
+        if intento == 0:
+            time.sleep(2)
     raise ultimo_error
 
 # ==========================================
@@ -173,7 +210,22 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
         elif quotes and ch in QUOTES:
             hit("comilla curva"); out.append(QUOTES[ch])
         elif strip_dashes and ch in ("—", "–"):
-            hit("raya de IA (em/en dash)"); out.append(", ")
+            hit("raya de IA (em/en dash)")
+            # Busca el carácter real anterior/siguiente saltando espacios
+            k = len(out) - 1
+            while k >= 0 and out[k] == " ":
+                k -= 1
+            antes = out[k] if k >= 0 else ""
+            m = i + 1
+            while m < n and s[m] == " ":
+                m += 1
+            despues = s[m] if m < n else ""
+            if antes.isdigit() and despues.isdigit():
+                out.append("-")          # rangos: 2010–2020 -> 2010-2020
+            elif antes in ("", "\n"):
+                pass                     # raya de diálogo al inicio de línea: se elimina
+            else:
+                out.append(", ")
         elif unicodedata.category(ch) in ("Cc",) and ch not in "\n\r\t":
             hit("carácter de control")
         elif unicodedata.category(ch) == "Co":
@@ -184,7 +236,11 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
 
     resultado = "".join(out)
     resultado = re.sub(r" +,", ",", resultado)
-    resultado = re.sub(r"  +", " ", resultado)
+    resultado = re.sub(r",(\s*,)+", ",", resultado)          # ",," que deja una raya tras una coma
+    resultado = re.sub(r",\s*([.;:!?)])", r"\1", resultado)  # ", ." -> "."
+    resultado = re.sub(r"(\d) *- *(\d)", r"\1-\2", resultado)
+    resultado = re.sub(r"[ \t]{2,}", " ", resultado)
+    resultado = re.sub(r"^ +", "", resultado, flags=re.MULTILINE)
     return resultado.strip(), counts
 
 
@@ -254,7 +310,7 @@ st.markdown("""
         color: #A0A0A0; font-size: 0.9rem; font-weight: 500; margin-bottom: 0.2rem;
     }
     .tono-fijo {
-        color: #FFFFFF; font-size: 0.88rem; font-weight: 600; padding: 0.5rem; 
+        color: #FFFFFF; font-size: 0.9rem; font-weight: 600; padding: 0.5rem; 
         background-color: #16181D; border-radius: 6px; border: 1px solid #2A2D35;
     }
 
@@ -284,7 +340,10 @@ st.markdown("""
 # --- 1. SEGURIDAD Y PANTALLA DE BIENVENIDA ---
 def check_password():
     def verify_password():
-        if st.session_state["password_input"] == st.secrets.get("APP_PASSWORD", "manu2026"):
+        # Usa APP_PASSWORD de Secretos si existe; si no, la clave es "manu2026".
+        clave_real = leer_secreto("APP_PASSWORD", "manu2026")
+        ingresada = st.session_state.get("password_input", "")
+        if clave_real and hmac.compare_digest(ingresada.encode(), str(clave_real).encode()):
             st.session_state["password_correct"] = True
             del st.session_state["password_input"]
         else:
@@ -295,7 +354,7 @@ def check_password():
         with col_centro:
             col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
             with col_logo_centro:
-                st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", use_container_width=True)
+                st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width="stretch")
             
             st.markdown("""
                 <div class="login-title">Humanizador Pro</div>
@@ -305,7 +364,7 @@ def check_password():
             """, unsafe_allow_html=True)
             
             st.text_input("Ingresa la contraseña para acceder", type="password", key="password_input")
-            st.button("Ingresar", on_click=verify_password, use_container_width=True, type="primary")
+            st.button("Ingresar", on_click=verify_password, width="stretch", type="primary")
             
             if "password_correct" in st.session_state and not st.session_state["password_correct"]:
                 st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
@@ -348,14 +407,14 @@ with st.sidebar:
         st.info("💡 Agrega GROQ_API_KEY para activar el modo híbrido.")
         MI_GROQ_KEY = st.text_input("API Key de Groq (Opcional)", type="password").strip()
     
-    st.markdown('<div class="tono-label">Flujo activo:</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tono-label">Motor activo:</div>', unsafe_allow_html=True)
     if MI_GROQ_KEY:
         try:
             modelos_disponibles = obtener_modelos_groq_activos(MI_GROQ_KEY)
-            modelo_principal = modelos_disponibles[0] if modelos_disponibles else "Groq Auto"
-            st.markdown(f'<div class="tono-fijo">Gemini (Capa B) → {modelo_principal} (Final)</div>', unsafe_allow_html=True)
+            modelo_principal = modelos_disponibles[0] if modelos_disponibles else "No detectado"
+            st.markdown(f'<div class="tono-fijo">Híbrido: {modelo_principal} + Gemini</div>', unsafe_allow_html=True)
         except Exception:
-            st.markdown('<div class="tono-fijo">Gemini (Capa B) → Groq (Final)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="tono-fijo">Híbrido: Groq (Auto) + Gemini</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="tono-fijo">Solo Gemini (Estándar)</div>', unsafe_allow_html=True)
     
@@ -363,7 +422,7 @@ with st.sidebar:
     usar_retrotraduccion = st.toggle(
         "Capa B: Retrotraducción ES→EN→ES",
         value=True,
-        help="Gemini desconstruye el texto vía inglés y el modelo abierto de Groq redacta la versión final anti-simetría."
+        help="Rompe la distribución estadística de tokens usando Groq antes de la auditoría final."
     )
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -409,100 +468,98 @@ st.markdown("<br>", unsafe_allow_html=True)
 col_btn1, col_btn2 = st.columns([3, 1])
 
 with col_btn1:
-    if st.button("Refinar Texto", use_container_width=True, type="primary"):
+    if st.button("Refinar Texto", width="stretch", type="primary"):
         if not texto_original.strip():
             st.warning("Por favor, pega un texto primero.")
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key de Gemini.")
         else:
-            with st.spinner("Desconstruyendo con Gemini y redactando versión final anti-simetría..."):
+            with st.spinner("Ejecutando Capa A, Capa B multimodelo y auditoría Humanizer..."):
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
 
                     # 0. CAPA A EN ENTRADA
                     texto_base, _ = clean_text(texto_original, quotes=True, keep_nbsp=False, strip_dashes=True)
 
-                    # 1. CAPA B CON GEMINI: Destruye el esqueleto sintáctico original
-                    if usar_retrotraduccion:
-                        prompt_en = (
-                            "Translate this Spanish text into blunt, everyday English. "
-                            "Break long academic sentences into plain statements. Keep every fact, name, and year. "
-                            "Output ONLY the English text."
-                        )
-                        texto_en = llamar_gemini(client, texto_base, prompt_en, temperature=0.7)
-
-                        prompt_es = (
-                            "Pasa este texto del inglés al español como apuntes de borrador claros y directos. "
-                            "Cambia el orden de las ideas dentro de cada párrafo y conserva todos los datos, nombres y fechas sin inventar nada. "
-                            "Devuelve SOLO el borrador en español."
-                        )
-                        borrador = llamar_gemini(client, texto_en, prompt_es, temperature=0.9)
-                    else:
-                        prompt_parafrasis = (
-                            "Reescribe este texto cambiando el orden de las cláusulas, los conectores y los límites de las oraciones. "
-                            "Conserva todos los hechos, nombres, fechas y cifras sin inventar nada. Devuelve SOLO el texto."
-                        )
-                        borrador = llamar_gemini(client, texto_base, prompt_parafrasis, temperature=0.95)
-
-                    # 2. REDACCIÓN FINAL ANTI-SIMETRÍA Y HUMANIZER (Con Groq abierto; respaldo Gemini)
-                    prompt_final = """
-                    Eres un ensayista escribiendo en español natural, directo y sin adornos de plantilla. Reescribe el borrador conservando todos los hechos, nombres, fechas y citas, pero eliminando por completo la cadencia de IA.
-
-                    REGLAS ESTRICTAS (NO ROMPER NINGUNA):
-                    1. PROHIBIDO USAR PARES SIMÉTRICOS AL FINAL DE LAS ORACIONES:
-                       - Mal: "...transforma la enseñanza y la investigación." / "...entender temas complejos y estructurar ideas." / "...fijar políticas claras y capacitar a docentes y estudiantes."
-                       - Bien: Di una sola acción concreta o divide las dos ideas en frases separadas con distinto verbo y ritmo.
-                    2. PROHIBIDO USAR TRÍOS: Nada de listas de tres elementos ("A, B y C"). Si el borrador trae tres ejemplos o tres problemas seguidos, sepáralos en oraciones distintas o intégralos en el relato sin formato de enumeración.
-                    3. FRASES Y CONECTORES VETADOS (NO USES NINGUNO):
-                       "al tiempo que", "A esto se suman", "Herramientas como", "A su vez", "Ante este panorama", "entre los que destacan", "cabe destacar", "es fundamental", "enfrenta un reto", "enfoque centrado en", "fomentar", "abordar", "mediante", "reside en", "sin embargo" al inicio de cada párrafo.
-                    4. CERO GERUNDIOS DE REMATE: Prohibido cerrar una frase con coma + gerundio ("..., dando prioridad a...", "..., promoviendo...", "..., dejando de lado..."). Usa punto seguido o una oración subordinada normal.
-                    5. SIN CIERRE CON MORALEJA: No remates con frases grandilocuentes ni recomendaciones institucionales. Termina en el último hecho o cita concreta.
-                    6. VOZ REAL, NO FOLLETO: Habla de personas concretas (profesores, estudiantes, investigadores) haciendo cosas reales. Usa verbos simples (cambia, sirve, falla, obliga, inventa, pide).
-                    7. RITMO IRREGULAR: Mezcla frases cortas (6 a 10 palabras) con frases medianas y alguna más larga que incluya un inciso natural entre comas o paréntesis.
-                    8. FORMATO: Solo prosa limpia. Sin rayas largas (— o –), sin negritas, sin listas y sin comillas curvas.
-
-                    Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
+                    prompt_en = "Translate the following Spanish text into plain, direct English. Preserve all facts, names, dates, and numbers. Output ONLY the English translation."
+                    prompt_es = """
+                    Traduce este texto al español natural y directo, como si lo escribiera un investigador o columnista.
+                    Cambia el orden de las cláusulas y los conectores. Preserva todos los datos, nombres, fechas y cifras sin inventar nada.
+                    Devuelve SOLO el texto en español.
+                    """
+                    prompt_parafrasis = """
+                    Reescribe el siguiente texto usando palabras y estructuras sintácticas sustancialmente distintas.
+                    Cambia el orden de las cláusulas, los conectores y los límites de las oraciones.
+                    Preserva todos los hechos, cifras, nombres y términos técnicos. No agregues ni quites información.
+                    Devuelve SOLO el texto reescrito.
                     """
 
-                    texto_generado = None
-                    modelo_final = "Gemini"
-
+                    # 1. CAPA B: RUPTURA ESTADÍSTICA (Groq con auto-detección de modelo + respaldo Gemini)
+                    borrador = None
+                    modelo_usado = "Gemini"
+                    st.session_state.pop("aviso_groq", None)
                     if MI_GROQ_KEY:
                         try:
-                            texto_generado, modelo_final = llamar_groq_dinamico(
-                                MI_GROQ_KEY, prompt_final, borrador, temperature=1.05
-                            )
+                            if usar_retrotraduccion:
+                                texto_en, _ = llamar_groq_dinamico(MI_GROQ_KEY, prompt_en, texto_base, temperature=0.7)
+                                borrador, modelo_usado = llamar_groq_dinamico(MI_GROQ_KEY, prompt_es, texto_en, temperature=0.95)
+                            else:
+                                borrador, modelo_usado = llamar_groq_dinamico(MI_GROQ_KEY, prompt_parafrasis, texto_base, temperature=1.0)
                         except Exception as e_groq:
-                            st.warning(f"⚠️ Groq falló en el paso final ({e_groq}). Usando Gemini como respaldo.")
-                            texto_generado = None
+                            # Se guarda en sesión para que el aviso no desaparezca con st.rerun()
+                            st.session_state["aviso_groq"] = f"⚠️ Groq no respondió ({e_groq}). Se usó Gemini como respaldo."
+                            borrador = None
 
-                    if texto_generado is None:
-                        texto_generado = llamar_gemini(
-                            client,
-                            borrador,
-                            prompt_final,
-                            temperature=1.05,
-                            top_p=0.95,
-                            top_k=64,
-                        )
+                    if borrador is None:
+                        if usar_retrotraduccion:
+                            texto_en = llamar_gemini(client, texto_base, prompt_en)
+                            borrador = llamar_gemini(client, texto_en, prompt_es)
+                        else:
+                            borrador = llamar_gemini(client, texto_base, prompt_parafrasis)
 
+                    # 2. AUDITORÍA Y REESCRITURA HUMANIZER (Gemini)
+                    prompt_humanizer = """
+                    Eres un editor humano experto aplicando una auditoría estricta de estilo. Tu trabajo es reescribir el borrador para eliminar TODA huella de redacción de IA, conservando exactamente los mismos hechos, datos, nombres y citas.
+
+                    ELIMINA SIN EXCEPCIÓN ESTOS PATRONES:
+                    1. Tríos forzados (§6): Si ves listas de 3 verbos o 3 sustantivos ("diseñar, elaborar y ajustar"; "buscar, ordenar y analizar"), rómpelas. Usa 1 o 2 elementos, o sepáralos en oraciones distintas.
+                    2. Contrastes prefabricados (§1): Elimina "No se trata solo de X, sino de Y", "abre posibilidades, pero plantea riesgos". Di el hecho directamente.
+                    3. Cierres con moraleja (§2 y §13): Si la última oración suena a conclusión genérica o recomendación ("Ningún avance reemplazará...", "El desafío consiste en..."), bórrala o reemplázala por el último dato concreto.
+                    4. Fórmulas vacías y muletillas de IA (§3 y §12): Prohibido usar "A su vez", "Ante este panorama", "entre los que destacan", "que no se pueden ignorar", "cabe destacar", "es fundamental", "fomentar", "abordar", "integral", "clave", "crucial", "mediante", "reside en".
+                    5. Gerundios de remate (§15): Elimina cláusulas pegadas al final con gerundio ("..., dejando de lado...", "..., promoviendo la equidad").
+                    6. Nominalización y verbos inflados (§18): Usa verbos simples y concretos (es, son, tiene, hace, cambia) y sujetos reales (profesores, estudiantes, universidades) en lugar de conceptos abstractos.
+                    7. Rayas y formato (§8 y §19): Cero rayas largas (— o –), cero negritas, cero listas, cero comillas curvas.
+
+                    RITMO HUMANO:
+                    - Alterna de forma natural oraciones cortas (6 a 10 palabras) con oraciones medianas y alguna larga. Que no suene mecánico ni simétrico.
+                    - Escribe como una persona real que va al grano, no como un folleto institucional.
+
+                    Devuelve ÚNICAMENTE el texto final limpio, sin saludos ni explicaciones.
+                    """
+
+                    texto_generado = llamar_gemini(client, borrador, prompt_humanizer)
+                    
                     # 3. CAPA A EN SALIDA
                     texto_limpio, reporte_limpieza = clean_text(
                         texto_generado, quotes=True, keep_nbsp=False, strip_dashes=True
                     )
                     
                     st.session_state["texto_humanizado"] = texto_limpio
-                    st.toast(f"✅ Flujo completado: Gemini → {modelo_final}", icon="✨")
+                    st.toast(f"✅ Procesado con {modelo_usado} + Gemini", icon="✨")
                     st.rerun() 
                     
                 except Exception as e:
                     st.error(f"Error técnico detallado: {e}")
 
+if st.session_state.get("aviso_groq"):
+    st.warning(st.session_state["aviso_groq"])
+
 with col_btn2:
-    st.button("Limpiar Textos", on_click=limpiar_textos, use_container_width=True)
+    st.button("Limpiar Textos", on_click=limpiar_textos, width="stretch")
 
 if st.session_state["texto_humanizado"]:
-    texto_json = json.dumps(st.session_state["texto_humanizado"])
+    # Escapa "</" para que un texto con "</script>" no rompa el HTML del botón
+    texto_json = json.dumps(st.session_state["texto_humanizado"]).replace("</", "<\\/")
     components.html(
         f"""
         <button id="copyBtn" style="
@@ -514,7 +571,15 @@ if st.session_state["texto_humanizado"]:
         <script>
         document.getElementById('copyBtn').addEventListener('click', function() {{
             const text = {texto_json};
-            navigator.clipboard.writeText(text).then(function() {{
+            const copiar = (navigator.clipboard && navigator.clipboard.writeText)
+                ? navigator.clipboard.writeText(text)
+                : Promise.reject();
+            copiar.catch(function() {{
+                // Respaldo para navegadores que bloquean el portapapeles dentro del iframe
+                const ta = document.createElement('textarea');
+                ta.value = text; document.body.appendChild(ta); ta.select();
+                document.execCommand('copy'); document.body.removeChild(ta);
+            }}).then(function() {{
                 document.getElementById('copyBtn').innerHTML = '✅ ¡Copiado!';
                 document.getElementById('copyBtn').style.borderColor = '#4CAF50';
                 document.getElementById('copyBtn').style.color = '#4CAF50';
