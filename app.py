@@ -31,7 +31,7 @@ def leer_secreto(nombre, defecto=None):
 GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-3.6-flash")
 
 # Límite del texto de entrada (caracteres, contando espacios)
-MAX_CARACTERES = 8000
+MAX_CARACTERES = 9000
 
 # ==========================================
 # PROVEEDORES DE MODELOS
