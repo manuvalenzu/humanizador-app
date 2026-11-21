@@ -41,7 +41,7 @@ st.markdown("""
     /* CAJA DE CONTRASEÑA */
     .stTextInput>div>div>input {
         background-color: #16181D !important; border: 1px solid #2A2D35 !important;
-        color: #E0E0E0 !important; border-radius: 8px !important;
+        color: #FFFFFF !important; border-radius: 8px !important;
         padding: 0.8rem !important; text-align: center; 
     }
     .stTextInput>div>div>input:focus { border-color: #D97757 !important; box-shadow: 0 0 0 1px #D97757 !important; }
@@ -53,10 +53,11 @@ st.markdown("""
     .header-subtitle { font-size: 0.95rem; color: #888888; margin-bottom: 1.5rem; }
     h4 { font-family: 'Inter', sans-serif !important; color: #E0E0E0 !important; font-weight: 500 !important; font-size: 1rem !important; margin-bottom: 0.5rem !important; letter-spacing: 0.02em; }
 
+    /* CAJAS DE TEXTO (LETRAS BLANCAS) */
     .stTextArea textarea {
         font-family: 'Inter', sans-serif; font-size: 1rem; line-height: 1.6;
         background-color: #16181D !important; border: 1px solid #2A2D35 !important;
-        border-radius: 8px !important; color: #E0E0E0 !important;
+        border-radius: 8px !important; color: #FFFFFF !important; 
         box-shadow: none !important; padding: 1.2rem !important;
     }
     .stTextArea textarea:focus { border-color: #D97757 !important; box-shadow: 0 0 0 1px #D97757 !important; }
@@ -76,6 +77,9 @@ st.markdown("""
 
     /* --- AJUSTES DE LA BARRA LATERAL --- */
     [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
+    
+    /* RADIO BUTTONS (LETRAS BLANCAS) */
+    .stRadio label p { color: #FFFFFF !important; font-size: 0.95rem !important; }
     
     /* CUADRO DE MOTOR PERSONALIZADO */
     .motor-box {
@@ -242,27 +246,25 @@ with col_btn1:
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key.")
         else:
-            with st.spinner(f"Aplicando reglas editoriales (Tono: {tono_seleccionado})..."):
+            with st.spinner(f"Aplicando reescritura profunda (Tono: {tono_seleccionado})..."):
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # PROMPTS BASADOS EN LA SKILL DE WIKIPEDIA (AI CLEANUP)
-                    # Se mantiene un tono profesional, pero se destruyen los patrones de IA.
-                    
+                    # PROMPT AGRESIVO: No limpia, REESCRIBE desde cero.
                     base_rules = """
-                    Eres un editor humano experto. Tu tarea es reescribir el texto para eliminar cualquier rastro de IA, basándote en la guía de Wikipedia sobre "Signs of AI writing".
+                    Eres un redactor humano experto. Tu tarea NO es limpiar el texto, sino REESCRIBIRLO COMPLETAMENTE desde cero con tus propias palabras.
+                    Imagina que leíste el texto original, cerraste el documento, y ahora tienes que explicar la misma idea a un colega, manteniendo los mismos datos y el mismo nivel de formalidad.
                     
-                    REGLAS ESTRICTAS DE LIMPIEZA:
-                    1. Elimina el vocabulario de IA: "crucial", "pivotal", "testimonio", "sinergia", "panorama", "entramado", "fomentar", "potenciar", "destacar", "sumergido", "vibrante".
-                    2. Prohibido usar el verbo "ser" de forma rebuscada: Cambia "se erige como", "constituye", "representa un" por "es", "tiene", "sirve para".
-                    3. Rompe la "Regla de Tres": Si hay listas de tres adjetivos o tres ideas, deja solo dos o una. No forces el ritmo.
-                    4. Elimina los gerundios de relleno al final de las frases: "..., reflejando", "..., destacando", "..., contribuyendo a". Corta la frase o di la idea directo.
-                    5. Evita los paralelismos negativos: "No solo X, sino también Y". Úsalos máximo una vez en todo el texto.
-                    6. Elimina los "falsos rangos": "desde X hasta Y". 
-                    7. Evita las atribuciones vagas: "Los expertos señalan", "Diversos autores afirman". Nombra la fuente o bórralo.
-                    8. PROHIBIDO usar emojis, negritas mecánicas, viñetas con títulos en negrita, o comillas curvas.
-                    9. NO cambies datos, cifras, nombres ni citas.
-                    10. Devuelve SOLO el texto final, sin explicaciones.
+                    REGLAS DE REESCRITURA HUMANA:
+                    1. Destruye la estructura original: No copies las mismas oraciones. Cambia el orden de las ideas si es necesario.
+                    2. Prohibido el vocabulario de IA: No uses "crucial", "pivotal", "testimonio", "sinergia", "panorama", "entramado", "fomentar", "potenciar", "destacar", "vibrante", "hito", "clave", "es fundamental".
+                    3. Prohibido usar el verbo "ser" de forma rebuscada: Cambia "se erige como", "constituye", "representa un" por "es", "tiene", "sirve para".
+                    4. Rompe la "Regla de Tres": Si hay listas de tres adjetivos o ideas, deja solo dos o una. No forces el ritmo.
+                    5. Elimina los gerundios de relleno al final de las frases: "..., reflejando", "..., destacando". Corta la frase o di la idea directo.
+                    6. Evita los paralelismos negativos: "No solo X, sino también Y".
+                    7. PROHIBIDO usar emojis, negritas mecánicas, viñetas o comillas curvas.
+                    8. NO cambies los datos, cifras, nombres ni citas. Si el texto original menciona una ley o un autor, mantenlo intacto.
+                    9. Devuelve SOLO el texto final reescrito, sin saludos ni explicaciones.
                     """
                     
                     if tono_seleccionado == "Académico Formal":
@@ -292,11 +294,11 @@ with col_btn1:
                         """
                     
                     response = client.models.generate_content(
-                        model="gemini-3.5-flash-lite", # Este modelo es más "rebelde" y rompe mejor los patrones
+                        model="gemini-3.5-flash-lite", # Dejamos solo el modelo rebelde
                         contents=texto_original,
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema, 
-                            temperature=0.85, # Temperatura alta para creatividad
+                            temperature=0.9, # Temperatura alta para forzar la creatividad
                         )
                     )
                     
