@@ -119,11 +119,21 @@ st.markdown("""
     .header-subtitle { font-size: 0.95rem; color: #888888; margin-bottom: 1.5rem; }
     h4 { font-family: 'Inter', sans-serif !important; color: #E0E0E0 !important; font-weight: 500 !important; font-size: 1rem !important; margin-bottom: 0.5rem !important; letter-spacing: 0.02em; }
 
-    .stTextArea textarea {
-        font-family: 'Inter', sans-serif; font-size: 1rem; line-height: 1.6;
-        background-color: #16181D !important; border: 1px solid #2A2D35 !important;
-        border-radius: 8px !important; color: #FFFFFF !important; 
-        box-shadow: none !important; padding: 1.2rem !important;
+    /* CAJAS DE TEXTO - FORZANDO LETRAS BLANCAS EN AMBOS ESTADOS */
+    .stTextArea textarea, 
+    .stTextArea textarea:disabled,
+    .stTextArea textarea[disabled] {
+        font-family: 'Inter', sans-serif !important; 
+        font-size: 1rem !important; 
+        line-height: 1.6 !important;
+        background-color: #16181D !important; 
+        border: 1px solid #2A2D35 !important;
+        border-radius: 8px !important; 
+        color: #FFFFFF !important; 
+        -webkit-text-fill-color: #FFFFFF !important;
+        opacity: 1 !important;
+        box-shadow: none !important; 
+        padding: 1.2rem !important;
     }
     .stTextArea textarea:focus { border-color: #D97757 !important; box-shadow: 0 0 0 1px #D97757 !important; }
 
@@ -141,7 +151,15 @@ st.markdown("""
     .stButton>button[kind="primary"]:hover { background-color: #c56544 !important; }
 
     [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
-    .stRadio label p { color: #FFFFFF !important; font-size: 0.95rem !important; }
+    
+    /* ETIQUETA DEL TONO (Estilo texto fijo) */
+    .tono-label {
+        color: #A0A0A0; font-size: 0.9rem; font-weight: 500; margin-bottom: 0.2rem;
+    }
+    .tono-fijo {
+        color: #FFFFFF; font-size: 1rem; font-weight: 600; padding: 0.5rem; 
+        background-color: #16181D; border-radius: 6px; border: 1px solid #2A2D35;
+    }
 
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
 
@@ -231,11 +249,10 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    # SELECTOR DE TONO PROFESIONAL
-    tono_seleccionado = st.radio(
-        "Selecciona el tono del texto:",
-        ["Académico Formal", "Estudiante Universitario", "Profesional / Trabajador"]
-    )
+    # TONO FIJO (Estilo etiqueta, sin radio buttons)
+    st.markdown('<div class="tono-label">Tono del texto:</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tono-fijo">Académico Formal</div>', unsafe_allow_html=True)
+    tono_seleccionado = "Académico Formal" # Variable fija para el prompt
     
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -245,9 +262,7 @@ with st.sidebar:
 
 # --- ÁREA PRINCIPAL ---
 st.markdown('<div class="header-title">Humanizador de Textos</div>', unsafe_allow_html=True)
-st.markdown('<div class="header-subtitle">Refina textos generados por IA para darles una voz auténticamente humana y sin metadatos ocultos.</div>', unsafe_allow_html=True)
-
-st.info("🔒 Tu texto se procesa con Gemini de Google y se limpia de caracteres invisibles. Por seguridad, no pegues datos personales ni confidenciales.")
+st.markdown('<div class="header-subtitle">Refina textos generados por IA para darles una voz auténticamente humana.</div>', unsafe_allow_html=True)
 
 # Inicializamos el estado
 if "texto_humanizado" not in st.session_state:
@@ -292,12 +307,12 @@ with col_btn1:
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key.")
         else:
-            with st.spinner(f"Aplicando reescritura profunda (Tono: {tono_seleccionado})..."):
+            with st.spinner("Aplicando reescritura profunda..."):
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
                     # PROMPT MAESTRO INTEGRADO (Skill Humanizador)
-                    base_rules = """
+                    prompt_sistema = """
                     Eres un editor humano experto. Recibes un texto y lo devuelves sonando como si lo hubiera escrito una persona concreta. Corriges la forma; el contenido se queda.
                     
                     REGLAS QUE NO SE ROMPEN:
@@ -320,31 +335,13 @@ with col_btn1:
                     - Usa conectores de verdad ("pero", "por eso", "aunque").
                     - Termina cuando se acaba lo que hay que decir. Sin moralejas ni cierres genéricos.
                     
+                    TONO: Académico Formal.
+                    - Usa un vocabulario rico y formal.
+                    - Usa la primera persona del plural (ej. "como sociedad", "nos lleva a pensar").
+                    - Mantén una estructura de párrafos irregular pero coherente.
+                    
                     RESULTADO: Devuelve SOLO el texto final, sin explicaciones ni saludos.
                     """
-                    
-                    if tono_seleccionado == "Académico Formal":
-                        prompt_sistema = base_rules + """
-                        TONO: Académico Formal.
-                        - Usa un vocabulario rico y formal.
-                        - Usa la primera persona del plural (ej. "como sociedad", "nos lleva a pensar").
-                        - Mantén una estructura de párrafos irregular pero coherente.
-                        """
-                    elif tono_seleccionado == "Profesional / Trabajador":
-                        prompt_sistema = base_rules + """
-                        TONO: Profesional / Trabajador.
-                        - Sé directo y ejecutivo.
-                        - Usa frases cortas para dar énfasis.
-                        - Agrega algún toque de opinión personal profesional.
-                        """
-                    else:
-                        prompt_sistema = base_rules + """
-                        TONO: Estudiante Universitario.
-                        - Usa un vocabulario académico pero natural.
-                        - Usa conectores humanos.
-                        - Puedes usar la primera persona del singular.
-                        - Usa paréntesis para aclaraciones.
-                        """
                     
                     response = client.models.generate_content(
                         model="gemini-3.5-flash-lite", 
