@@ -238,7 +238,7 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
     r = re.sub(r"[ \t]{2,}", " ", r)
     r = re.sub(r"^ +", "", r, flags=re.MULTILINE)
     r = re.sub(r"\*\*(.+?)\*\*", r"\1", r)                       # negritas markdown
-    r = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", r, flags=re.MULTILINE)  # viñetas
+    r = re.sub(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+", "", r, flags=re.MULTILINE)  # viñetas (no toca años)
     r = re.sub(r"^#+\s*", "", r, flags=re.MULTILINE)             # títulos markdown
     # y -> e ante sonido "i" (incluye mayúsculas), pero no ante diptongo: "agua y hielo"
     r = re.sub(r"\by (?=(?:[iíIÍ]|h[iíIÍ])(?![aeouáéóAEOU]))", "e ", r)
@@ -271,14 +271,95 @@ PATRON_ENUMERACION = re.compile(
 PATRON_GERUNDIO = re.compile(r", ([\wáéíóúñ]+(?:ando|iendo|yendo))\b", re.IGNORECASE)
 
 
+def contar_palabras(texto):
+    return len(re.findall(r"\S+", texto or ""))
+
+
+def dividir_parrafos(texto):
+    return [p.strip() for p in re.split(r"\n\s*\n|\n", texto or "") if p.strip()]
+
+
+def _normalizar(t):
+    t = unicodedata.normalize("NFD", t.lower())
+    return "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+
+_MAYUS = "A-ZÁÉÍÓÚÑÜ"
+_PATRON_NOMBRE = re.compile(
+    rf"\b[{_MAYUS}][\wáéíóúñü]+(?:(?:\s+(?:de|del|la|las|los|y|e|el)){{0,2}}\s+[{_MAYUS}][\wáéíóúñü]+)*"
+)
+_MESES = "enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre"
+_PATRON_FECHA = re.compile(rf"\b\d{{1,2}} de (?:{_MESES})(?: de(?:l año)? \d{{3,4}})?", re.IGNORECASE)
+_PATRON_CIFRA = re.compile(r"\b\d[\d.,]*\d%?|\b\d%?")
+
+
+def extraer_datos_clave(texto):
+    """Fechas, cifras y nombres propios que el resultado debe conservar."""
+    datos = []
+    fechas = [m.group(0) for m in _PATRON_FECHA.finditer(texto)]
+    for f in fechas:
+        if f not in datos:
+            datos.append(f)
+    for m in _PATRON_CIFRA.finditer(texto):
+        valor = m.group(0).rstrip(".,")
+        # Un número que ya va dentro de una fecha completa no se repite suelto
+        if not valor or valor in datos or any(re.search(rf"\b{re.escape(valor)}\b", f) and f.startswith(valor) for f in fechas):
+            continue
+        datos.append(valor)
+    for m in _PATRON_NOMBRE.finditer(texto):
+        nombre = m.group(0).strip()
+        inicio = m.start()
+        previo = texto[:inicio].rstrip()
+        al_inicio = (not previo) or previo[-1] in ".!?:\n\"'("
+        # Una sola palabra al inicio de oración suele ser una mayúscula normal, no un nombre
+        if al_inicio and " " not in nombre:
+            continue
+        if al_inicio and " " in nombre:
+            # "La Revolución Francesa" -> "Revolución Francesa"
+            partes = nombre.split()
+            if partes[0].lower() in ("la", "el", "los", "las", "en", "durante", "para", "con", "desde", "tras"):
+                nombre = " ".join(partes[1:])
+            if " " not in nombre and nombre[:1].isupper() and len(nombre) < 4:
+                continue
+        if len(nombre) >= 3 and nombre not in datos:
+            datos.append(nombre)
+    return datos[:40]
+
+
+def datos_faltantes(original, resultado):
+    res = _normalizar(resultado)
+    return [d for d in extraer_datos_clave(original) if _normalizar(d) not in res]
+
+
+def problemas_de_fidelidad(texto, referencia):
+    """Compara contra el original: largo, párrafos y datos perdidos."""
+    problemas = []
+    p_ref, p_txt = contar_palabras(referencia), contar_palabras(texto)
+    if p_ref and p_txt < 0.88 * p_ref:
+        problemas.append(
+            f"El texto quedó resumido: tiene {p_txt} palabras y el original {p_ref}. "
+            f"Desarrolla de nuevo cada idea hasta llegar a unas {p_ref} palabras, sin agregar datos nuevos."
+        )
+    par_ref, par_txt = len(dividir_parrafos(referencia)), len(dividir_parrafos(texto))
+    if par_ref and par_txt != par_ref:
+        problemas.append(
+            f"El original tiene {par_ref} párrafo(s) y este texto tiene {par_txt}. "
+            f"Deja exactamente {par_ref} párrafos, uno por cada párrafo del original."
+        )
+    faltan = datos_faltantes(referencia, texto)
+    if faltan:
+        problemas.append("Faltan estos datos del original y deben volver tal cual: " + ", ".join(f'"{d}"' for d in faltan) + ".")
+    return problemas
+
+
 def dividir_oraciones(texto):
     partes = re.split(r"(?<=[.!?])\s+", texto.strip())
     return [p for p in partes if len(p.split()) >= 2]
 
 
-def auditar_texto(texto):
-    """Devuelve (lista_de_problemas, métricas)."""
-    problemas = []
+def auditar_texto(texto, referencia=None):
+    """Devuelve (lista_de_problemas, métricas). Con referencia, revisa también la fidelidad."""
+    problemas = problemas_de_fidelidad(texto, referencia) if referencia else []
     oraciones = dividir_oraciones(texto)
     largos = [len(o.split()) for o in oraciones]
 
@@ -319,7 +400,7 @@ def auditar_texto(texto):
     if oraciones:
         ultima = oraciones[-1].lower()
         if re.search(r"\b(debe|deben|deberá|necesario|desafío|reto|futuro|oportunidad|clave|en definitiva)\b", ultima):
-            problemas.append(f'La última oración suena a moraleja: "{oraciones[-1][:90]}". Termina con un dato concreto.')
+            problemas.append(f'La última oración suena a moraleja: "{oraciones[-1][:90]}". Reescríbela como un hecho concreto, sin borrar su contenido.')
 
     metricas["problemas"] = len(problemas)
     return problemas, metricas
@@ -517,10 +598,6 @@ PIE_HTML = """
 """
 
 
-def contar_palabras(texto):
-    return len(re.findall(r"\S+", texto or ""))
-
-
 def html_hoja(texto):
     """El resultado como hoja de papel, con sus párrafos."""
     if not texto:
@@ -530,7 +607,7 @@ def html_hoja(texto):
             '<p class="vacia-texto">Pega un texto a la izquierda y pulsa Refinar texto. '
             'El resultado queda en esta hoja, listo para copiar.</p></div>'
         )
-    parrafos = [p.strip() for p in re.split(r"\n\s*\n|\n", texto) if p.strip()]
+    parrafos = dividir_parrafos(texto)
     cuerpo = "".join(f"<p>{html_lib.escape(p)}</p>" for p in parrafos)
     return f'<div class="hoja" role="region" aria-label="Texto humanizado" tabindex="0">{cuerpo}</div>'
 
@@ -688,46 +765,75 @@ st.markdown(
 # ==========================================
 # PROMPTS
 # ==========================================
+REGLA_NO_RESUMIR = """
+REGLA MÁXIMA (por encima de todas las demás): PROHIBIDO RESUMIR.
+- Mantén la misma longitud, la misma cantidad de párrafos y el mismo nivel de detalle que el texto original.
+- No omitas ninguna idea, argumento, ejemplo, dato ni matiz. Cada párrafo del original tiene su párrafo en el resultado, en el mismo orden y con una extensión parecida.
+- Si el original tiene 4 párrafos, el resultado tiene 4 párrafos con la misma extensión.
+- Conserva TAL CUAL todas las fechas, años, cifras, nombres de personas, lugares, instituciones, obras y citas. Puedes moverlos dentro de la oración, pero nunca borrarlos ni cambiarlos.
+- Cambiar el estilo nunca justifica acortar. Si dudas, deja la idea más desarrollada, no menos.
+"""
+
 PROMPT_EN = (
-    "Translate this Spanish text into blunt, everyday English. "
-    "Break long academic sentences into plain statements. Keep every fact, name, number, quote and year. "
+    "Translate this Spanish text into plain, everyday English. "
+    "Keep EXACTLY the same paragraphs (same number, same order) and the same level of detail: do not summarize or skip anything. "
+    "Keep every fact, name, institution, number, quote and year exactly as written. "
     "Output ONLY the English text."
 )
 PROMPT_ES = (
-    "Pasa este texto del inglés al español como apuntes de borrador claros y directos. "
-    "Cambia el orden de las ideas dentro de cada párrafo y conserva todos los datos, nombres, cifras, citas y fechas sin inventar nada. "
-    "Devuelve SOLO el borrador en español."
+    "Pasa este texto del inglés al español natural y directo. "
+    "Cambia el orden de las ideas dentro de cada oración y los conectores, pero conserva los mismos párrafos, "
+    "en el mismo orden y con la misma extensión. No resumas ni omitas nada. "
+    "Conserva todos los datos, nombres, instituciones, cifras, citas y fechas sin inventar nada. "
+    "Devuelve SOLO el texto en español."
 )
 PROMPT_PARAFRASIS = (
     "Reescribe este texto cambiando el orden de las cláusulas, los conectores y los límites de las oraciones. "
-    "Conserva todos los hechos, nombres, fechas, citas y cifras sin inventar nada. Devuelve SOLO el texto."
+    "Mantén la misma cantidad de párrafos y la misma extensión: no resumas ni omitas nada. "
+    "Conserva todos los hechos, nombres, instituciones, fechas, citas y cifras sin inventar nada. Devuelve SOLO el texto."
 )
 PROMPT_FINAL = """
-Eres un ensayista que escribe en español natural, directo y sin adornos de plantilla. Reescribe el borrador conservando todos los hechos, nombres, fechas, cifras y citas, pero eliminando por completo la cadencia de IA.
-
-REGLAS ESTRICTAS (NO ROMPER NINGUNA):
-1. DIVISIÓN OBLIGATORIA DE ENUMERACIONES: si el borrador enumera 3 o 4 elementos en una sola frase ("A, B, C y D"), QUEDA PROHIBIDO dejarlos juntos. Repártelos en dos oraciones con verbos distintos.
+Eres un ensayista que escribe en español natural, directo y sin adornos de plantilla. Reescribe el borrador conservando todo su contenido, pero eliminando por completo la cadencia de IA.
+""" + REGLA_NO_RESUMIR + """
+REGLAS DE ESTILO (aplícalas sin acortar el texto):
+1. ENUMERACIONES: si el borrador enumera 3 o 4 elementos en una sola frase ("A, B, C y D"), repártelos en dos oraciones con verbos distintos. Todos los elementos se mantienen.
    - Mal: "Hay sobredependencia tecnológica, desigualdad en el acceso, sesgo algorítmico y riesgos de privacidad."
    - Bien: "El sesgo de los algoritmos y el manejo de datos privados preocupan a las facultades. A eso se le agrega que no todos acceden por igual y algunos alumnos dependen demasiado del programa."
-2. PROHIBIDO CERRAR ORACIONES CON PARES SIMÉTRICOS ("...la enseñanza y la investigación"). Di una sola acción concreta o separa en frases con distinto verbo.
-3. EXPRESIONES VETADAS (NO USES NINGUNA): "al tiempo que", "a esto se suma", "herramientas como", "a su vez", "ante este panorama", "entre los que destacan", "cabe destacar", "es fundamental", "es crucial", "enfrenta un reto", "enfoque centrado en", "fomentar", "abordar", "mediante", "reside en", "en este sentido", "en este contexto", "por otro lado", "no solo... sino también", "juega un papel", "hoy en día", "cada vez más", "panorama", "paradigma", "potenciar", "integral", "clave para", "en conclusión", "en definitiva".
-4. CERO GERUNDIOS DE REMATE: prohibido cerrar una frase con coma + gerundio ("..., promoviendo..."). Usa punto seguido y un verbo conjugado.
-5. SIN CIERRE CON MORALEJA: no termines con recomendaciones, desafíos futuros ni "es una oportunidad, pero...". Termina en el último hecho o cita concreta.
-6. VOZ REAL: habla de personas concretas (profesores, estudiantes, investigadores) haciendo cosas reales. Usa verbos simples (cambia, sirve, falla, obliga, pide, usa, deja).
-7. RITMO IRREGULAR: alterna sin patrón fijo frases muy cortas (5 a 9 palabras) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas. Que dos oraciones seguidas casi nunca tengan el mismo largo.
-8. INICIOS VARIADOS: no empieces dos oraciones seguidas con la misma palabra ni con el sujeto en la misma posición. A veces abre con un complemento ("En 2023, ...", "Para muchos docentes, ...").
-9. VOCABULARIO: prefiere la palabra común sobre la culta ("usar" en vez de "utilizar", "hacer" en vez de "llevar a cabo", "por eso" en vez de "por consiguiente").
-10. FORMATO: solo prosa en párrafos. Sin rayas largas (— o –), sin negritas, sin listas, sin títulos y sin comillas curvas.
+2. NADA DE PARES SIMÉTRICOS AL CIERRE DE LAS ORACIONES ("...la enseñanza y la investigación"): separa las ideas en frases con distinto verbo, sin perder ninguna.
+3. EXPRESIONES VETADAS (NO USES NINGUNA): "al tiempo que", "a esto se suma", "herramientas como", "a su vez", "ante este panorama", "entre los que destacan", "cabe destacar", "es fundamental", "es crucial", "enfrenta un reto", "enfoque centrado en", "fomentar", "abordar", "mediante", "reside en", "en este sentido", "en este contexto", "por otro lado", "no solo... sino también", "juega un papel", "hoy en día", "cada vez más", "panorama", "paradigma", "potenciar", "integral", "clave para", "en conclusión", "en definitiva". Reemplázalas por una expresión común; no borres la idea que acompañan.
+4. CERO GERUNDIOS DE REMATE: no cierres una frase con coma + gerundio ("..., promoviendo..."). Usa punto seguido y un verbo conjugado.
+5. CIERRE SIN MORALEJA: si el último párrafo termina en una recomendación genérica, reescríbela como una afirmación concreta. No borres el párrafo de cierre.
+6. VOZ REAL: habla de personas e instituciones concretas haciendo cosas reales. Usa verbos simples (cambia, sirve, falla, obliga, pide, usa, deja).
+7. RITMO IRREGULAR: alterna sin patrón fijo frases cortas (5 a 9 palabras) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas.
+8. INICIOS VARIADOS: no empieces dos oraciones seguidas con la misma palabra. A veces abre con un complemento ("En 1789, ...", "Para muchos docentes, ...").
+9. VOCABULARIO: prefiere la palabra común sobre la culta ("usar" en vez de "utilizar", "hacer" en vez de "llevar a cabo").
+10. FORMATO: solo prosa en párrafos separados por una línea en blanco. Sin rayas largas (— o –), sin negritas, sin listas, sin títulos y sin comillas curvas.
 
 Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
 """
 PROMPT_CORRECCION = """
-Eres un corrector de estilo. Te paso un texto y una lista de problemas detectados por una revisión automática.
-Corrige SOLO esos problemas, con cambios mínimos, y deja intacto todo lo demás.
-No agregues información, no elimines datos, cifras, nombres ni citas, y no añadas conclusiones.
-Formato: solo prosa en párrafos, sin rayas largas, sin negritas, sin listas.
+Eres un corrector de estilo. Te paso el texto ORIGINAL, un TEXTO reescrito y una lista de PROBLEMAS detectados por una revisión automática.
+Corrige SOLO esos problemas en el TEXTO y deja intacto todo lo demás.
+""" + REGLA_NO_RESUMIR + """
+- Si un problema dice que el texto quedó resumido o que faltan datos, recupera desde el ORIGINAL las ideas y los datos perdidos y vuelve a desarrollarlos con el estilo del TEXTO.
+- Para corregir un problema de estilo, reescribe la frase; nunca la borres.
+- No agregues información que no esté en el ORIGINAL y no añadas conclusiones.
+Formato: solo prosa en párrafos separados por una línea en blanco, sin rayas largas, sin negritas, sin listas.
 Devuelve ÚNICAMENTE el texto corregido.
 """
+
+
+def instrucciones_de_medida(original):
+    """Le dice al modelo cuánto mide el original y qué datos no puede perder."""
+    datos = extraer_datos_clave(original)
+    lineas = [
+        f"MEDIDA DEL ORIGINAL: {len(dividir_parrafos(original))} párrafo(s) y unas {contar_palabras(original)} palabras. "
+        "El resultado debe tener la misma cantidad de párrafos y una extensión parecida (entre 95% y 115%)."
+    ]
+    if datos:
+        lineas.append("DATOS OBLIGATORIOS (deben aparecer tal cual): " + ", ".join(datos) + ".")
+    return "\n".join(lineas)
+
 
 # ==========================================
 # ENRUTADOR: usa el proveedor preferido y cae al otro si falla
@@ -748,7 +854,7 @@ def generar(system_prompt, texto, temperature, preferir, client, avisos):
             errores.append(f"{proveedor.capitalize()}: {e}")
             continue
         if errores:
-            aviso = f"⚡ {errores[0][:160]} Se usó el otro proveedor como respaldo."
+            aviso = f"{errores[0][:160]} Se usó el otro proveedor como respaldo."
             if aviso not in avisos:
                 avisos.append(aviso)
         return resultado
@@ -764,47 +870,60 @@ def procesar(texto_original, estado):
 
     estado.update(label="Limpiando caracteres ocultos y formato")
     texto_base, _ = clean_text(texto_original)
+    medida = instrucciones_de_medida(texto_base)
 
     if usar_retrotraduccion:
         estado.update(label="Pasando el texto al inglés")
-        texto_en, _ = generar(PROMPT_EN, texto_base, 0.7, pref_b, client, avisos)
+        texto_en, _ = generar(PROMPT_EN, texto_base, 0.6, pref_b, client, avisos)
         estado.update(label="Volviendo al español con otra estructura")
-        borrador, _ = generar(PROMPT_ES, texto_en, 0.9, pref_b, client, avisos)
+        borrador, _ = generar(PROMPT_ES, f"{medida}\n\nTEXTO:\n{texto_en}", 0.85, pref_b, client, avisos)
     else:
         estado.update(label="Reordenando cláusulas y conectores")
-        borrador, _ = generar(PROMPT_PARAFRASIS, texto_base, 0.95, pref_b, client, avisos)
+        borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida}\n\nTEXTO:\n{texto_base}", 0.9, pref_b, client, avisos)
+    borrador, _ = clean_text(borrador)
 
+    # Si el borrador ya perdió algo, la redacción final trabaja con el original al lado
     estado.update(label="Redactando la versión final")
     pref_final = "groq" if MI_GROQ_KEY else "gemini"
-    texto_generado, modelo_final = generar(PROMPT_FINAL, borrador, 1.0, pref_final, client, avisos)
+    entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
+    texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.95, pref_final, client, avisos)
     texto_generado, _ = clean_text(texto_generado)
 
-    problemas_iniciales, _ = auditar_texto(texto_generado)
-    if usar_auditoria:
-        for ronda in range(2):
-            problemas, _ = auditar_texto(texto_generado)
-            if not problemas:
-                break
-            estado.update(label=f"Corrigiendo {len(problemas)} punto(s) detectados en la revisión")
-            lista = "\n".join(f"- {p}" for p in problemas)
-            try:
-                corregido, _ = generar(
-                    PROMPT_CORRECCION,
-                    f"PROBLEMAS DETECTADOS:\n{lista}\n\nTEXTO:\n{texto_generado}",
-                    0.8, pref_final, client, avisos,
-                )
-            except Exception as e_corr:
-                avisos.append(f"No se pudo hacer la corrección automática ({e_corr}).")
-                break
-            corregido, _ = clean_text(corregido)
-            nuevos, _ = auditar_texto(corregido)
-            if len(nuevos) < len(problemas) and len(corregido) > 0.7 * len(texto_generado):
-                texto_generado = corregido
-            else:
-                break
+    problemas_iniciales, _ = auditar_texto(texto_generado, texto_base)
+    rondas = 3 if usar_auditoria else 1
+    for ronda in range(rondas):
+        problemas, _ = auditar_texto(texto_generado, texto_base)
+        # Sin la revisión de estilo activada, igual se corrige si quedó resumido o perdió datos
+        if not usar_auditoria:
+            problemas = problemas_de_fidelidad(texto_generado, texto_base)
+        if not problemas:
+            break
+        estado.update(label=f"Corrigiendo {len(problemas)} punto(s) detectados en la revisión")
+        lista = "\n".join(f"- {p}" for p in problemas)
+        try:
+            corregido, _ = generar(
+                PROMPT_CORRECCION,
+                f"{medida}\n\nPROBLEMAS DETECTADOS:\n{lista}\n\nORIGINAL:\n{texto_base}\n\nTEXTO:\n{texto_generado}",
+                0.7, pref_final, client, avisos,
+            )
+        except Exception as e_corr:
+            avisos.append(f"No se pudo hacer la corrección automática ({e_corr}).")
+            break
+        corregido, _ = clean_text(corregido)
+        nuevos, _ = auditar_texto(corregido, texto_base)
+        fidelidad_antes = len(problemas_de_fidelidad(texto_generado, texto_base))
+        fidelidad_despues = len(problemas_de_fidelidad(corregido, texto_base))
+        # Se acepta si mejora y no vuelve a acortar el texto
+        no_acorta = contar_palabras(corregido) >= 0.95 * contar_palabras(texto_generado) or fidelidad_despues < fidelidad_antes
+        if len(nuevos) < len(problemas) and fidelidad_despues <= fidelidad_antes and no_acorta:
+            texto_generado = corregido
+        else:
+            break
 
     texto_limpio, _ = clean_text(texto_generado)
-    problemas_finales, metricas = auditar_texto(texto_limpio)
+    problemas_finales, metricas = auditar_texto(texto_limpio, texto_base)
+    metricas["palabras_original"] = contar_palabras(texto_base)
+    metricas["palabras_resultado"] = contar_palabras(texto_limpio)
     auditoria = {"antes": len(problemas_iniciales), "despues": problemas_finales, "metricas": metricas}
     return texto_limpio, modelo_final, avisos, auditoria, texto_base
 
@@ -930,6 +1049,14 @@ if st.session_state["texto_humanizado"] and aud:
             f'<p class="sin-pendientes">{hecho} Igual conviene leerlo y cambiar alguna frase con tus palabras.</p>'
         )
     fuente = st.session_state.get("texto_fuente", "")
+    m_aud = aud.get("metricas", {})
+    if m_aud.get("palabras_original"):
+        porcentaje = round(100 * m_aud["palabras_resultado"] / m_aud["palabras_original"])
+        extension = (f'<p class="ritmo-intro">Extensión: {m_aud["palabras_resultado"]} palabras de '
+                     f'{m_aud["palabras_original"]} del original ({porcentaje}%). '
+                     f'Párrafos: {len(dividir_parrafos(st.session_state["texto_humanizado"]))} de {len(dividir_parrafos(fuente))}.</p>')
+    else:
+        extension = ""
     filas = (fila_ritmo("Original", fuente, "barra-orig") if fuente else "") + \
         fila_ritmo("Humanizado", st.session_state["texto_humanizado"], "barra-hum")
     st.markdown(
@@ -937,7 +1064,7 @@ if st.session_state["texto_humanizado"] and aud:
         '<h2 class="ritmo-titulo" id="ritmo-titulo">Ritmo de las oraciones</h2>'
         '<p class="ritmo-intro">Cada barra es una oración y su altura es el número de palabras. '
         'Un texto generado suele tener barras parejas; uno escrito por una persona sube y baja.</p>'
-        f'{filas}{bloque_pendientes}</section>',
+        f'{extension}{filas}{bloque_pendientes}</section>',
         unsafe_allow_html=True,
     )
 
