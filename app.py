@@ -26,120 +26,204 @@ def leer_secreto(nombre, defecto=None):
     except Exception:
         return defecto
 
-MI_API_KEY = leer_secreto("GEMINI_API_KEY")
-MI_GROQ_KEY = leer_secreto("GROQ_API_KEY")
 GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-3.6-flash")
 
 # Límite del texto de entrada (caracteres, contando espacios)
 MAX_CARACTERES = 8000
 
 # ==========================================
-# AUTO-DETECCIÓN DE MODELOS ACTIVOS EN GROQ
+# PROVEEDORES DE MODELOS
+# Cada proveedor se activa solo si su clave está en los Secretos de Streamlit.
+# Los modelos se detectan automáticamente desde la cuenta; para fijar uno,
+# agrega <PROVEEDOR>_MODEL en Secretos (por ejemplo OPENAI_MODEL = "gpt-...").
 # ==========================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def obtener_modelos_groq_activos(api_key):
-    url = "https://api.groq.com/openai/v1/models"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    resp = requests.get(url, headers=headers, timeout=20)
-    resp.raise_for_status()
-    data = resp.json().get("data", [])
+PROVEEDORES = {
+    # id: nombre visible, secreto de la clave, tipo de API, URL base
+    "anthropic":  {"nombre": "Claude",     "clave": "ANTHROPIC_API_KEY",  "tipo": "anthropic", "base": "https://api.anthropic.com/v1"},
+    "openai":     {"nombre": "ChatGPT",    "clave": "OPENAI_API_KEY",     "tipo": "openai",    "base": "https://api.openai.com/v1"},
+    "deepseek":   {"nombre": "DeepSeek",   "clave": "DEEPSEEK_API_KEY",   "tipo": "openai",    "base": "https://api.deepseek.com/v1"},
+    "nvidia":     {"nombre": "NVIDIA",     "clave": "NVIDIA_API_KEY",     "tipo": "openai",    "base": "https://integrate.api.nvidia.com/v1"},
+    "mistral":    {"nombre": "Mistral",    "clave": "MISTRAL_API_KEY",    "tipo": "openai",    "base": "https://api.mistral.ai/v1"},
+    "gemini":     {"nombre": "Gemini",     "clave": "GEMINI_API_KEY",     "tipo": "gemini",    "base": ""},
+    "groq":       {"nombre": "Groq",       "clave": "GROQ_API_KEY",       "tipo": "openai",    "base": "https://api.groq.com/openai/v1"},
+    "cerebras":   {"nombre": "Cerebras",   "clave": "CEREBRAS_API_KEY",   "tipo": "openai",    "base": "https://api.cerebras.ai/v1"},
+    "openrouter": {"nombre": "OpenRouter", "clave": "OPENROUTER_API_KEY", "tipo": "openai",    "base": "https://openrouter.ai/api/v1"},
+}
+# Orden por defecto para elegir el modelo de la redacción final (mejor español primero)
+ORDEN_CALIDAD = ["anthropic", "openai", "deepseek", "nvidia", "mistral", "gemini", "groq", "cerebras", "openrouter"]
 
-    # "compound" son agentes con búsqueda web: alteran el contenido, no sirven aquí
-    excluidos = ("whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed",
-                 "vision", "audio", "compound", "allam")
+CLAVES = {pid: leer_secreto(p["clave"]) for pid, p in PROVEEDORES.items()}
+
+EXCLUIDOS = ("whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision", "audio",
+             "compound", "allam", "realtime", "image", "transcribe", "search", "moderation", "ocr",
+             "dall", "davinci", "babbage", "instruct", "voxtral", "codestral", "computer-use", "sora",
+             "-vl", "coder", "devstral", "magistral", "-tts", "omni", "edit",
+             "rerank", "reward", "retriever", "parse", "clip", "safety", "vila", "kosmos", "deplot",
+             "neva", "fuyu", "paligemma", "nemoretriever", "riva", "cosmos", "bge", "e5-", "arctic-embed")
+DEBILES = ("8b", "7b", "3b", "1b", "mini", "nano", "small", "tiny", "lite", "instant", "haiku", "ministral")
+
+PREFERENCIAS = {
+    "anthropic": ("sonnet", "opus", "haiku"),
+    "openai": ("gpt-5", "gpt-4.1", "gpt-4o", "gpt"),
+    "deepseek": ("deepseek-chat", "deepseek-v", "deepseek"),
+    "mistral": ("mistral-large-latest", "mistral-medium-latest", "mistral-large", "mistral-medium", "mistral-small-latest"),
+    "nvidia": ("deepseek-v3", "qwen3-235b", "llama-3.3-70b", "llama-3.1-405b", "llama-4-maverick",
+               "kimi-k2", "mistral-large", "nemotron-ultra", "deepseek", "qwen3", "llama"),
+    "groq": ("llama-3.3-70b", "gpt-oss-120b", "kimi", "llama-4-maverick", "qwen", "llama-4", "deepseek", "gpt-oss", "llama"),
+    "cerebras": ("gpt-oss-120b", "qwen-3-235b", "llama-3.3-70b", "qwen", "llama"),
+    "openrouter": ("deepseek", "llama-3.3-70b", "qwen3", "mistral", "gemma", "llama"),
+}
+
+
+def _puntaje_modelo(pid, mid, creado):
+    low = mid.lower()
+    debil = 1 if any(d in low for d in DEBILES) else 0
+    prefs = PREFERENCIAS.get(pid, ())
+    pref = next((i for i, p in enumerate(prefs) if p in low), len(prefs))
+    gratis = 0 if (pid == "openrouter" and low.endswith(":free")) else 1
+    razonador = 1 if (pid == "nvidia" and any(r in low for r in ("-r1", "reasoning", "thinking"))) else 0
+    return (gratis, debil, razonador, pref, -(creado or 0))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def detectar_modelos(pid, api_key):
+    """Lista de modelos de chat de la cuenta, del mejor al peor."""
+    fijos = leer_secreto(f"{pid.upper()}_MODEL")
+    if fijos:
+        return [m.strip() for m in str(fijos).split(",") if m.strip()]
+    if pid == "gemini":
+        return [GEMINI_MODEL]
+    p = PROVEEDORES[pid]
+    if p["tipo"] == "anthropic":
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    else:
+        headers = {"Authorization": f"Bearer {api_key}"}
+    resp = requests.get(f"{p['base']}/models", headers=headers, timeout=20)
+    resp.raise_for_status()
+    datos = resp.json().get("data", [])
     candidatos = []
-    for item in data:
+    for item in datos:
         mid = item.get("id", "")
         low = mid.lower()
-        if mid and item.get("active", True) and not any(x in low for x in excluidos):
-            candidatos.append(mid)
+        if not mid or item.get("active", True) is False or any(x in low for x in EXCLUIDOS):
+            continue
+        if pid == "openai" and not low.startswith("gpt-"):
+            continue
+        creado = item.get("created") or 0
+        if not creado and item.get("created_at"):
+            # Claude entrega la fecha como texto: "2026-05-14T..." -> 20260514
+            try:
+                creado = int(str(item["created_at"])[:10].replace("-", ""))
+            except ValueError:
+                creado = 0
+        candidatos.append((mid, creado))
+    candidatos.sort(key=lambda c: _puntaje_modelo(pid, c[0], c[1]))
+    return [c[0] for c in candidatos]
 
-    # Modelos grandes primero; los pequeños ("8b", "instant") al final
-    prioridades = ("llama-3.3-70b", "gpt-oss-120b", "kimi", "llama-4-maverick", "qwen",
-                   "llama-4", "deepseek", "gpt-oss", "mistral", "llama-3", "gemma")
 
-    def puntaje(mid):
-        low = mid.lower()
-        if "8b" in low or "instant" in low:
-            return len(prioridades) + 1
-        for idx, pref in enumerate(prioridades):
-            if pref in low:
-                return idx
-        return len(prioridades)
+def _post_con_ajustes(url, headers, payload, tipo):
+    """POST que se adapta a lo que cada modelo acepta (temperatura, tokens, penalizaciones)."""
+    ultimo = None
+    for intento in range(5):
+        resp = requests.post(url, headers=headers, json=payload, timeout=120)
+        ultimo = resp
+        if resp.status_code == 200:
+            return resp
+        texto = resp.text.lower()
+        if resp.status_code == 400:
+            cambiado = False
+            if "penalty" in texto and ("frequency_penalty" in payload or "presence_penalty" in payload):
+                payload.pop("frequency_penalty", None); payload.pop("presence_penalty", None); cambiado = True
+            if ("temperature" in texto or "top_p" in texto) and ("temperature" in payload or "top_p" in payload):
+                payload.pop("temperature", None); payload.pop("top_p", None); cambiado = True
+            if "max_tokens" in texto and "max_tokens" in payload and tipo == "openai":
+                # Modelos nuevos de OpenAI usan max_completion_tokens (incluye el razonamiento)
+                payload["max_completion_tokens"] = payload.pop("max_tokens") * 3; cambiado = True
+            if cambiado:
+                continue
+        if resp.status_code == 429 and intento < 3:
+            try:
+                espera = float(resp.headers.get("retry-after", "0"))
+            except (TypeError, ValueError):
+                espera = 0
+            if 0 < espera <= 25:
+                time.sleep(espera + 0.5)
+                continue
+        break
+    return ultimo
 
-    candidatos.sort(key=puntaje)
-    return candidatos
+
+def llamar_proveedor(pid, system_prompt, user_text, temperature):
+    """Llama a un proveedor probando sus mejores modelos. Devuelve (texto, 'Proveedor (modelo)')."""
+    p = PROVEEDORES[pid]
+    clave = CLAVES.get(pid)
+    if not clave:
+        raise RuntimeError(f"{p['nombre']}: falta {p['clave']} en Secretos.")
+    max_salida = max(1500, min(8000, len(user_text) // 3 + 800))
+
+    if p["tipo"] == "gemini":
+        client = genai.Client(api_key=clave)
+        return llamar_gemini(client, user_text, system_prompt), f"Gemini ({GEMINI_MODEL})"
+
+    modelos = detectar_modelos(pid, clave)
+    if not modelos:
+        raise RuntimeError(f"{p['nombre']}: no se encontraron modelos de texto en la cuenta.")
+
+    ultimo_error = ""
+    for modelo in modelos[:3]:
+        try:
+            if p["tipo"] == "anthropic":
+                headers = {"x-api-key": clave, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+                payload = {
+                    "model": modelo, "max_tokens": max_salida, "system": system_prompt,
+                    "messages": [{"role": "user", "content": user_text}],
+                    "temperature": min(1.0, temperature),
+                }
+                resp = _post_con_ajustes(f"{p['base']}/messages", headers, payload, "anthropic")
+                if resp.status_code == 200:
+                    bloques = resp.json().get("content", [])
+                    contenido = "".join(b.get("text", "") for b in bloques if b.get("type") == "text")
+                else:
+                    contenido = ""
+            else:
+                headers = {"Authorization": f"Bearer {clave}", "Content-Type": "application/json"}
+                if pid == "openrouter":
+                    headers["X-Title"] = "Humanizador Pro"
+                payload = {
+                    "model": modelo,
+                    "messages": [{"role": "system", "content": system_prompt},
+                                 {"role": "user", "content": user_text}],
+                    "temperature": temperature, "top_p": 0.95, "max_tokens": max_salida,
+                }
+                if pid in ("groq", "openrouter", "deepseek", "openai"):
+                    payload["frequency_penalty"] = 0.25
+                    payload["presence_penalty"] = 0.2
+                resp = _post_con_ajustes(f"{p['base']}/chat/completions", headers, payload, "openai")
+                contenido = ""
+                if resp.status_code == 200:
+                    try:
+                        contenido = resp.json()["choices"][0]["message"].get("content") or ""
+                    except (ValueError, KeyError, IndexError):
+                        contenido = ""
+        except requests.RequestException as e:
+            ultimo_error = f"{p['nombre']} ({modelo}) sin respuesta: {e}"
+            continue
+        contenido = quitar_razonamiento(contenido)
+        if contenido:
+            return contenido, f"{p['nombre']} ({modelo})"
+        ultimo_error = (f"{p['nombre']} ({modelo}) HTTP {resp.status_code}: {resp.text[:200]}"
+                        if resp.status_code != 200 else f"{p['nombre']} ({modelo}) devolvió una respuesta vacía.")
+    raise RuntimeError(ultimo_error)
 
 
 def quitar_razonamiento(texto):
-    """qwen3 / deepseek-r1 devuelven su razonamiento entre <think>...</think>: se elimina."""
+    """Algunos modelos devuelven su razonamiento entre <think>...</think>: se elimina."""
     if not texto:
         return ""
     texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)
     texto = re.sub(r"^.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)
     return texto.strip()
 
-
-def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.0):
-    modelos = obtener_modelos_groq_activos(api_key)
-    if not modelos:
-        raise RuntimeError("No se encontraron modelos de chat activos en tu cuenta de Groq.")
-
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-    # La respuesta mide más o menos lo mismo que el texto a reescribir; se deja margen.
-    # Sin este tope, Groq reserva miles de tokens de salida y rechaza el pedido por tamaño.
-    max_salida = max(1500, min(8000, len(user_text) // 3 + 800))
-
-    ultimo_error = ""
-    for modelo in modelos[:4]:
-        payload = {
-            "model": modelo,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
-            "temperature": temperature,
-            "top_p": 0.95,
-            "frequency_penalty": 0.25,
-            "presence_penalty": 0.2,
-            "max_tokens": max_salida,
-        }
-        for intento in range(3):
-            try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=120)
-            except requests.RequestException as e:
-                ultimo_error = f"Groq ({modelo}) sin respuesta: {e}"
-                break
-            # Si el modelo no acepta las penalizaciones, se reintenta sin ellas
-            if resp.status_code == 400 and "penalty" in resp.text and intento == 0:
-                payload.pop("frequency_penalty", None)
-                payload.pop("presence_penalty", None)
-                continue
-            # Límite por minuto: si Groq pide esperar poco, espera y reintenta el mismo modelo
-            if resp.status_code == 429 and intento < 2:
-                try:
-                    espera = float(resp.headers.get("retry-after", "0"))
-                except (TypeError, ValueError):
-                    espera = 0
-                if 0 < espera <= 25:
-                    time.sleep(espera + 0.5)
-                    continue
-            if resp.status_code == 200:
-                try:
-                    contenido = resp.json()["choices"][0]["message"].get("content") or ""
-                except (ValueError, KeyError, IndexError):
-                    contenido = ""
-                contenido = quitar_razonamiento(contenido)
-                if contenido:
-                    return contenido, modelo
-                ultimo_error = f"Groq ({modelo}) devolvió una respuesta vacía."
-            else:
-                ultimo_error = f"Groq ({modelo}) HTTP {resp.status_code}: {resp.text[:200]}"
-            break
-
-    raise RuntimeError(ultimo_error)
 
 # ==========================================
 # LLAMADA A GEMINI CON REINTENTO ANTE ERRORES TEMPORALES
@@ -157,7 +241,6 @@ def llamar_gemini(client, contents, system_instruction):
             ultimo_error = RuntimeError("Gemini devolvió una respuesta vacía (posible bloqueo de contenido).")
         except Exception as e:
             ultimo_error = e
-            # Cuota agotada (429): no reintenta para no perder tiempo
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 break
         if intento == 0:
@@ -746,37 +829,49 @@ with st.sidebar:
     st.image(LOGO_URL, width=56)
     st.markdown("### Configuración")
 
-    if not MI_API_KEY:
-        st.warning("Falta GEMINI_API_KEY en Secretos. Puedes pegarla aquí.")
-        MI_API_KEY = st.text_input("API key de Gemini", type="password").strip()
+    conectados = [pid for pid in ORDEN_CALIDAD if CLAVES.get(pid)]
+    if not conectados:
+        st.warning("No hay ninguna API key en Secretos. Puedes pegar una aquí para probar.")
+        clave_tmp = st.text_input("API key de Gemini", type="password").strip()
+        if clave_tmp:
+            CLAVES["gemini"] = clave_tmp
+        clave_tmp = st.text_input("API key de Groq", type="password").strip()
+        if clave_tmp:
+            CLAVES["groq"] = clave_tmp
+        conectados = [pid for pid in ORDEN_CALIDAD if CLAVES.get(pid)]
 
-    if not MI_GROQ_KEY:
-        st.info("Agrega GROQ_API_KEY para activar el modo híbrido.")
-        MI_GROQ_KEY = st.text_input("API key de Groq (opcional)", type="password").strip()
-
-    solo_groq = False
-    if MI_GROQ_KEY:
-        solo_groq = st.toggle(
-            "Usar solo Groq",
-            value=True,
-            help="Ahorra la cuota diaria de Gemini. Gemini queda solo como respaldo.",
+    nombres = {pid: PROVEEDORES[pid]["nombre"] for pid in PROVEEDORES}
+    modelo_final_id = None
+    proveedores_mezcla = []
+    if conectados:
+        modelo_final_id = st.selectbox(
+            "Modelo para la redacción final",
+            conectados, index=0, format_func=lambda pid: nombres[pid],
+            help="Hace el paso más importante. Por defecto se elige el que mejor escribe en español.",
+        )
+        proveedores_mezcla = st.multiselect(
+            "Modelos para los demás pasos",
+            conectados, default=conectados, format_func=lambda pid: nombres[pid],
+            help="Cada paso usa un modelo distinto de esta lista. Si uno falla, se prueba el siguiente.",
+        )
+        lineas = []
+        for pid in conectados:
+            try:
+                mods = detectar_modelos(pid, CLAVES[pid])
+                lineas.append(f"{nombres[pid]}: {mods[0] if mods else 'sin modelos'}")
+            except Exception:
+                lineas.append(f"{nombres[pid]}: clave no válida o sin conexión")
+        st.markdown(
+            '<div class="motor"><p class="motor-label">Modelos conectados</p>'
+            + "".join(f'<p class="motor-valor">{html_lib.escape(l)}</p>' for l in lineas) + "</div>",
+            unsafe_allow_html=True,
         )
 
-    if MI_GROQ_KEY:
-        try:
-            modelos_disponibles = obtener_modelos_groq_activos(MI_GROQ_KEY)
-            modelo_principal = modelos_disponibles[0] if modelos_disponibles else "Groq automático"
-        except Exception:
-            modelo_principal = "Groq automático"
-        motor = f"Groq ({modelo_principal})" if solo_groq else f"Gemini y Groq ({modelo_principal})"
-    else:
-        motor = "Gemini"
-    st.markdown(
-        f'<div class="motor"><p class="motor-label">Motor en uso</p>'
-        f'<p class="motor-valor">{html_lib.escape(motor)}</p></div>',
-        unsafe_allow_html=True,
+    mezclar_modelos = st.toggle(
+        "Un modelo distinto en cada paso",
+        value=True,
+        help="Reparte traducción, estructura y redacción entre modelos distintos para no dejar la huella de uno solo.",
     )
-
     usar_retrotraduccion = st.toggle(
         "Retrotraducción español, inglés, español",
         value=True,
@@ -790,8 +885,15 @@ with st.sidebar:
     usar_auditoria = st.toggle(
         "Revisión y corrección automática",
         value=True,
-        help="Capa C: revisa ritmo, muletillas, enumeraciones, gerundios y cierre, y corrige hasta 2 veces.",
+        help="Capa C: revisa ritmo, muletillas, enumeraciones, gerundios, inicios y cierre, y corrige hasta 3 veces.",
     )
+
+    with st.expander("Cómo agregar más modelos"):
+        st.markdown(
+            "En Streamlit Cloud, abre **Settings → Secrets** y agrega las claves que tengas:\n\n"
+            + "\n".join(f"- `{PROVEEDORES[pid]['clave']}` para {nombres[pid]}" for pid in ORDEN_CALIDAD)
+            + "\n\nPara fijar un modelo concreto, agrega por ejemplo `OPENAI_MODEL = \"nombre-del-modelo\"`."
+        )
 
     st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
     if st.button("Cerrar sesión", width="stretch"):
@@ -923,30 +1025,40 @@ def instrucciones_de_medida(original, partir=False):
 
 
 # ==========================================
-# ENRUTADOR: usa el proveedor preferido y cae al otro si falla
+# ENRUTADOR: qué modelo hace cada paso
 # ==========================================
-def generar(system_prompt, texto, temperature, preferir, client, avisos):
-    """preferir: 'groq' o 'gemini'. Devuelve (texto, nombre_modelo)."""
-    orden = ["groq", "gemini"] if preferir == "groq" else ["gemini", "groq"]
+def armar_plan():
+    """Devuelve {paso: [proveedores en orden de intento]}."""
+    final = modelo_final_id
+    disponibles = [pid for pid in ORDEN_CALIDAD if CLAVES.get(pid)]
+    mezcla = [pid for pid in proveedores_mezcla if CLAVES.get(pid)] or disponibles
+    otros = [pid for pid in mezcla if pid != final] or [final]
+    pasos_mezcla = ["ingles", "espanol", "estructura"]
+    plan = {}
+    for i, paso in enumerate(pasos_mezcla):
+        principal = otros[i % len(otros)] if mezclar_modelos else final
+        plan[paso] = [principal] + [p for p in mezcla if p != principal] + [p for p in disponibles if p not in mezcla and p != principal]
+    for paso in ("final", "correccion"):
+        plan[paso] = [final] + [p for p in disponibles if p != final]
+    return plan
+
+
+def generar(system_prompt, texto, temperature, paso, plan, avisos, usados):
+    """Prueba los proveedores del paso en orden. Devuelve (texto, 'Proveedor (modelo)')."""
     errores = []
-    for proveedor in orden:
+    for pid in plan[paso]:
         try:
-            if proveedor == "groq" and MI_GROQ_KEY:
-                resultado = llamar_groq_dinamico(MI_GROQ_KEY, system_prompt, texto, temperature=temperature)
-            elif proveedor == "gemini" and client is not None:
-                resultado = (llamar_gemini(client, texto, system_prompt), "Gemini")
-            else:
-                continue
+            resultado = llamar_proveedor(pid, system_prompt, texto, temperature)
         except Exception as e:
-            errores.append(f"{proveedor.capitalize()}: {e}")
+            errores.append(str(e))
             continue
         if errores:
-            aviso = f"{errores[0][:160]} Se usó el otro proveedor como respaldo."
+            aviso = f"{errores[0][:160]} Se usó otro modelo como respaldo."
             if aviso not in avisos:
                 avisos.append(aviso)
+        usados[paso] = resultado[1]
         return resultado
     raise RuntimeError(" | ".join(errores) or "No hay ningún proveedor configurado.")
-
 
 
 def explicar_error(e):
@@ -971,8 +1083,8 @@ def explicar_error(e):
 def procesar(texto_original, estado):
     """Corre todo el flujo y devuelve (texto_final, modelo, avisos, auditoria, texto_base)."""
     avisos = []
-    client = genai.Client(api_key=MI_API_KEY) if MI_API_KEY else None
-    pref_b = "groq" if (solo_groq or client is None) else "gemini"
+    plan = armar_plan()
+    usados = {}
     partir = usar_estructura
 
     estado.update(label="Limpiando caracteres ocultos y formato")
@@ -983,22 +1095,21 @@ def procesar(texto_original, estado):
     # CAPA B: retrotraducción o paráfrasis (conserva los párrafos del original)
     if usar_retrotraduccion:
         estado.update(label="Pasando el texto al inglés")
-        texto_en, _ = generar(PROMPT_EN, texto_base, 0.6, pref_b, client, avisos)
+        texto_en, _ = generar(PROMPT_EN, texto_base, 0.6, "ingles", plan, avisos, usados)
         estado.update(label="Volviendo al español con otra estructura")
-        borrador, _ = generar(PROMPT_ES, f"{medida_igual}\n\nTEXTO:\n{texto_en}", 0.85, pref_b, client, avisos)
+        borrador, _ = generar(PROMPT_ES, f"{medida_igual}\n\nTEXTO:\n{texto_en}", 0.85, "espanol", plan, avisos, usados)
     else:
         estado.update(label="Reordenando cláusulas y conectores")
-        borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida_igual}\n\nTEXTO:\n{texto_base}", 0.85, pref_b, client, avisos)
+        borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida_igual}\n\nTEXTO:\n{texto_base}", 0.85, "espanol", plan, avisos, usados)
     borrador, _ = clean_text(borrador)
 
-    pref_final = "groq" if MI_GROQ_KEY else "gemini"
 
     # CAPA DE DESTRUCCIÓN DE ESTRUCTURA: más párrafos, más cortos, oraciones de largo extremo
     if partir:
         estado.update(label="Rompiendo la estructura de párrafos y oraciones")
         entrada_estructura = f"{medida}\n\nTEXTO A REESTRUCTURAR:\n{borrador}"
         try:
-            reestructurado, _ = generar(PROMPT_ESTRUCTURA, entrada_estructura, 0.85, pref_final, client, avisos)
+            reestructurado, _ = generar(PROMPT_ESTRUCTURA, entrada_estructura, 0.85, "estructura", plan, avisos, usados)
             reestructurado, _ = clean_text(reestructurado)
             # Solo se usa si no resumió
             if contar_palabras(reestructurado) >= 0.88 * contar_palabras(texto_base):
@@ -1011,7 +1122,7 @@ def procesar(texto_original, estado):
     # REDACCIÓN FINAL (temperatura 0.85: menos frases hechas)
     estado.update(label="Redactando la versión final")
     entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
-    texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.85, pref_final, client, avisos)
+    texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.85, "final", plan, avisos, usados)
     texto_generado, _ = clean_text(texto_generado)
 
     # CAPA C: revisión en código y corrección puntual
@@ -1030,7 +1141,7 @@ def procesar(texto_original, estado):
             corregido, _ = generar(
                 PROMPT_CORRECCION,
                 f"{medida}\n\nPROBLEMAS DETECTADOS:\n{lista}\n\nORIGINAL:\n{texto_base}\n\nTEXTO:\n{texto_generado}",
-                0.7, pref_final, client, avisos,
+                0.7, "correccion", plan, avisos, usados,
             )
         except Exception as e_corr:
             avisos.append(f"No se pudo hacer la corrección automática ({e_corr}).")
@@ -1050,7 +1161,7 @@ def procesar(texto_original, estado):
     problemas_finales, metricas = auditar_texto(texto_limpio, texto_base, partir)
     metricas["palabras_original"] = contar_palabras(texto_base)
     metricas["palabras_resultado"] = contar_palabras(texto_limpio)
-    auditoria = {"antes": len(problemas_iniciales), "despues": problemas_finales, "metricas": metricas}
+    auditoria = {"antes": len(problemas_iniciales), "despues": problemas_finales, "metricas": metricas, "modelos": usados}
     return texto_limpio, modelo_final, avisos, auditoria, texto_base
 
 
@@ -1077,8 +1188,8 @@ with col1:
     if refinar:
         if not texto_original.strip():
             st.warning("Pega un texto primero.")
-        elif not MI_API_KEY and not MI_GROQ_KEY:
-            st.error("Falta configurar al menos una API key (Gemini o Groq) en la barra lateral.")
+        elif not conectados:
+            st.error("Falta configurar al menos una API key en los Secretos de Streamlit.")
         else:
             error_proceso = None
             with st.status("Preparando", expanded=False) as estado:
@@ -1189,6 +1300,12 @@ if st.session_state["texto_humanizado"] and aud:
                      f'Párrafos: {len(dividir_parrafos(st.session_state["texto_humanizado"]))} de {len(dividir_parrafos(fuente))}.</p>')
     else:
         extension = ""
+    usados = aud.get("modelos") or {}
+    etiquetas = {"ingles": "al inglés", "espanol": "vuelta al español", "estructura": "estructura",
+                 "final": "redacción final", "correccion": "corrección"}
+    if usados:
+        modelos_txt = "; ".join(f"{etiquetas[k]}: {html_lib.escape(v)}" for k, v in usados.items() if k in etiquetas)
+        extension += f'<p class="ritmo-intro">Modelos usados. {modelos_txt}.</p>'
     filas = (fila_ritmo("Original", fuente, "barra-orig") if fuente else "") + \
         fila_ritmo("Humanizado", st.session_state["texto_humanizado"], "barra-hum")
     st.markdown(
