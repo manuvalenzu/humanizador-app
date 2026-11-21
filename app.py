@@ -181,10 +181,10 @@ with st.sidebar:
         st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
     
-    # NUEVO SELECTOR DE TONO (3 OPCIONES)
+    # SELECTOR DE TONO PROFESIONAL
     tono_seleccionado = st.radio(
         "Selecciona el tono del texto:",
-        ["Estudiante Universitario", "Académico Formal", "Humano Natural"]
+        ["Académico Formal", "Estudiante Universitario", "Profesional / Trabajador"]
     )
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -216,6 +216,7 @@ with col1:
         "Pega tu texto aquí:", 
         height=400, 
         label_visibility="collapsed",
+        max_chars=5000, # LÍMITE DE SEGURIDAD
         key="input_original_key"
     )
 
@@ -245,49 +246,57 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # PROMPTS DEPENDIENDO DEL TONO
+                    # PROMPTS BASADOS EN LA SKILL DE WIKIPEDIA (AI CLEANUP)
+                    # Se mantiene un tono profesional, pero se destruyen los patrones de IA.
+                    
+                    base_rules = """
+                    Eres un editor humano experto. Tu tarea es reescribir el texto para eliminar cualquier rastro de IA, basándote en la guía de Wikipedia sobre "Signs of AI writing".
+                    
+                    REGLAS ESTRICTAS DE LIMPIEZA:
+                    1. Elimina el vocabulario de IA: "crucial", "pivotal", "testimonio", "sinergia", "panorama", "entramado", "fomentar", "potenciar", "destacar", "sumergido", "vibrante".
+                    2. Prohibido usar el verbo "ser" de forma rebuscada: Cambia "se erige como", "constituye", "representa un" por "es", "tiene", "sirve para".
+                    3. Rompe la "Regla de Tres": Si hay listas de tres adjetivos o tres ideas, deja solo dos o una. No forces el ritmo.
+                    4. Elimina los gerundios de relleno al final de las frases: "..., reflejando", "..., destacando", "..., contribuyendo a". Corta la frase o di la idea directo.
+                    5. Evita los paralelismos negativos: "No solo X, sino también Y". Úsalos máximo una vez en todo el texto.
+                    6. Elimina los "falsos rangos": "desde X hasta Y". 
+                    7. Evita las atribuciones vagas: "Los expertos señalan", "Diversos autores afirman". Nombra la fuente o bórralo.
+                    8. PROHIBIDO usar emojis, negritas mecánicas, viñetas con títulos en negrita, o comillas curvas.
+                    9. NO cambies datos, cifras, nombres ni citas.
+                    10. Devuelve SOLO el texto final, sin explicaciones.
+                    """
+                    
                     if tono_seleccionado == "Académico Formal":
-                        prompt_sistema = """
-                        Actúa como un redactor humano experto. Reescribe el texto manteniendo un tono académico y profesional (ideal para la universidad).
-                        Reglas:
-                        1. Rompe la estructura robótica: mezcla frases cortas y largas.
-                        2. Evita palabras robóticas: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como", "Cabe destacar".
-                        3. Para sonar humano, usa conectores académicos naturales (ej. "A fin de cuentas...", "Ojo, no se trata de...", "Lo cierto es que...").
-                        4. Usa paréntesis para aclaraciones, haz alguna pregunta retórica, usa la primera persona del plural.
-                        5. NUNCA uses jerga coloquial (ej. "chamba", "rollo"). El vocabulario debe ser formal.
-                        6. Mantén EXACTAMENTE los mismos datos, cifras y nombres.
-                        7. Devuelve SOLO el texto final.
+                        prompt_sistema = base_rules + """
+                        TONO: Académico Formal (Para tesis, papers, docentes).
+                        - Usa un vocabulario rico y formal (ej. "no obstante", "asimismo").
+                        - Usa la primera persona del plural (ej. "como sociedad", "nos lleva a pensar").
+                        - Introduce alguna pregunta retórica reflexiva para romper el ritmo.
+                        - Mantén una estructura de párrafos irregular pero coherente.
                         """
-                    elif tono_seleccionado == "Humano Natural":
-                        prompt_sistema = """
-                        Actúa como un estudiante universitario escribiendo en un foro. Tu objetivo es reescribir el texto para que pase como 100% humano ante los detectores de IA.
-                        Reglas:
-                        1. Rompe la estructura: no uses párrafos perfectos, mezcla frases muy cortas con largas.
-                        2. Usa conectores informales (ej. "A fin de cuentas...", "Lo cierto es que...", "Y bueno...").
-                        3. Introduce "ruido humano": usa paréntesis, preguntas retóricas, y de vez en cuando empieza frases con "Y" o "Pero".
-                        4. Usa guiones (-) o puntos suspensivos (...) en lugar de comas formales.
-                        5. NUNCA uses estas palabras: "Adicionalmente", "En conclusión", "Es fundamental", "Se erige como".
-                        6. Mantén EXACTAMENTE los mismos datos, cifras y nombres.
-                        7. Devuelve SOLO el texto final.
+                    elif tono_seleccionado == "Profesional / Trabajador":
+                        prompt_sistema = base_rules + """
+                        TONO: Profesional / Trabajador (Para informes, correos corporativos, propuestas).
+                        - Sé directo y ejecutivo. Ve al grano.
+                        - Usa un lenguaje claro, persuasivo pero sin ser informal.
+                        - Puedes usar frases cortas para dar énfasis (ej. "El resultado es claro.", "Aquí hay un problema.").
+                        - Agrega algún toque de opinión personal profesional (ej. "Mi recomendación es...", "A mi juicio...").
                         """
                     else:
-                        # TONO ESTUDIANTE UNIVERSITARIO (EL PUNTO MEDIO PERFECTO)
-                        prompt_sistema = """
-                        Actúa como un estudiante universitario avanzado. Reescribe el texto para que suene como un ensayo humano bien redactado, con un vocabulario académico y rico, pero con la naturalidad suficiente para evadir detectores de IA (como ZeroGPT).
-                        Reglas estrictas:
-                        1. Estructura irregular: mezcla párrafos cortos con otros un poco más largos. No uses conectores robóticos como "En primera instancia", "Adicionalmente", "En conclusión", "Cabe destacar", "Se erige como".
-                        2. Vocabulario académico: usa palabras cultas y formales (ej. "no obstante", "asimismo", "en este sentido"), pero NUNCA uses jerga coloquial como "chamba", "patito", "rollo" o "bronca".
-                        3. Ruido humano académico: introduce alguna pregunta retórica reflexiva (ej. "¿cómo se explica esto?"), usa paréntesis para aclaraciones conceptuales, y usa la primera persona del plural (ej. "como sociedad", "nos lleva a pensar").
-                        4. Puntuación variada: usa puntos suspensivos (...) y guiones (-) para romper la linealidad perfecta del texto.
-                        5. Mantén EXACTAMENTE los mismos datos, cifras, nombres y hechos del texto original. No inventes información nueva.
-                        6. Devuelve SOLO el texto final, sin saludos ni explicaciones.
+                        prompt_sistema = base_rules + """
+                        TONO: Estudiante Universitario (Para ensayos, foros, trabajos de clase).
+                        - Usa un vocabulario académico pero natural.
+                        - Usa conectores humanos (ej. "A fin de cuentas...", "Lo cierto es que...").
+                        - Puedes usar la primera persona del singular ocasionalmente para dar opinión (ej. "Considero que...", "A mi parecer...").
+                        - Rompe la estructura rígida: mezcla frases cortas con largas.
+                        - Usa paréntesis para aclaraciones (como si estuvieras pensando en voz alta).
                         """
                     
                     response = client.models.generate_content(
-                        model="gemini-3.5-flash-lite", 
+                        model="gemini-3.5-flash-lite", # Este modelo es más "rebelde" y rompe mejor los patrones
                         contents=texto_original,
                         config=types.GenerateContentConfig(
-                            system_instruction=prompt_sistema, temperature=0.85, 
+                            system_instruction=prompt_sistema, 
+                            temperature=0.85, # Temperatura alta para creatividad
                         )
                     )
                     
