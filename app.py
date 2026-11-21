@@ -108,6 +108,9 @@ def llamar_gemini(client, contents, system_instruction, temperature=0.95, top_p=
             return resp.text
         except Exception as e:
             ultimo_error = e
+            # Si es cuota agotada (429), no reintenta para no perder tiempo
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                break
             if intento == 0:
                 time.sleep(2)
     raise ultimo_error
@@ -185,7 +188,6 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
     resultado = "".join(out)
     resultado = re.sub(r" +,", ",", resultado)
     resultado = re.sub(r"  +", " ", resultado)
-    # Corrección ortográfica en español: "y" -> "e" antes de i/hi (excepto hie-)
     resultado = re.sub(r"\by (?=(?:i|í|hi(?!e)))", "e ", resultado)
     resultado = re.sub(r"\bY (?=(?:i|í|hi(?!e)))", "E ", resultado)
     return resultado.strip(), counts
@@ -351,14 +353,25 @@ with st.sidebar:
         st.info("💡 Agrega GROQ_API_KEY para activar el modo híbrido.")
         MI_GROQ_KEY = st.text_input("API Key de Groq (Opcional)", type="password").strip()
     
+    solo_groq = False
+    if MI_GROQ_KEY:
+        solo_groq = st.toggle(
+            "Modo Solo Groq (Ahorrar cuota Gemini)",
+            value=True,
+            help="Usa Groq para todo el flujo y evita el límite de 20 solicitudes/día de Gemini."
+        )
+
     st.markdown('<div class="tono-label">Flujo activo:</div>', unsafe_allow_html=True)
     if MI_GROQ_KEY:
         try:
             modelos_disponibles = obtener_modelos_groq_activos(MI_GROQ_KEY)
             modelo_principal = modelos_disponibles[0] if modelos_disponibles else "Groq Auto"
-            st.markdown(f'<div class="tono-fijo">Gemini (Capa B) → {modelo_principal} (Final)</div>', unsafe_allow_html=True)
+            if solo_groq:
+                st.markdown(f'<div class="tono-fijo">Solo Groq ({modelo_principal})</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="tono-fijo">Gemini → {modelo_principal} (Respaldo Auto)</div>', unsafe_allow_html=True)
         except Exception:
-            st.markdown('<div class="tono-fijo">Gemini (Capa B) → Groq (Final)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="tono-fijo">Groq (Auto) + Gemini</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="tono-fijo">Solo Gemini (Estándar)</div>', unsafe_allow_html=True)
     
@@ -366,7 +379,7 @@ with st.sidebar:
     usar_retrotraduccion = st.toggle(
         "Capa B: Retrotraducción ES→EN→ES",
         value=True,
-        help="Gemini desconstruye el texto vía inglés y el modelo abierto de Groq redacta la versión final anti-simetría."
+        help="Desconstruye el texto vía inglés antes de la redacción final anti-enumeración."
     )
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -415,39 +428,55 @@ with col_btn1:
     if st.button("Refinar Texto", use_container_width=True, type="primary"):
         if not texto_original.strip():
             st.warning("Por favor, pega un texto primero.")
-        elif not MI_API_KEY:
-            st.error("⚠️ Falta la API Key de Gemini.")
+        elif not MI_API_KEY and not MI_GROQ_KEY:
+            st.error("⚠️ Falta configurar al menos una API Key (Gemini o Groq).")
         else:
-            with st.spinner("Desconstruyendo con Gemini y redactando versión final anti-enumeración..."):
+            with st.spinner("Desconstruyendo texto y redactando versión final anti-enumeración..."):
                 try:
-                    client = genai.Client(api_key=MI_API_KEY)
+                    client = genai.Client(api_key=MI_API_KEY) if MI_API_KEY else None
 
                     # 0. CAPA A EN ENTRADA
                     texto_base, _ = clean_text(texto_original, quotes=True, keep_nbsp=False, strip_dashes=True)
 
-                    # 1. CAPA B CON GEMINI: Destruye el esqueleto sintáctico original
-                    if usar_retrotraduccion:
-                        prompt_en = (
-                            "Translate this Spanish text into blunt, everyday English. "
-                            "Break long academic sentences into plain statements. Keep every fact, name, and year. "
-                            "Output ONLY the English text."
-                        )
-                        texto_en = llamar_gemini(client, texto_base, prompt_en, temperature=0.7)
+                    prompt_en = (
+                        "Translate this Spanish text into blunt, everyday English. "
+                        "Break long academic sentences into plain statements. Keep every fact, name, and year. "
+                        "Output ONLY the English text."
+                    )
+                    prompt_es = (
+                        "Pasa este texto del inglés al español como apuntes de borrador claros y directos. "
+                        "Cambia el orden de las ideas dentro de cada párrafo y conserva todos los datos, nombres y fechas sin inventar nada. "
+                        "Devuelve SOLO el borrador en español."
+                    )
+                    prompt_parafrasis = (
+                        "Reescribe este texto cambiando el orden de las cláusulas, los conectores y los límites de las oraciones. "
+                        "Conserva todos los hechos, nombres, fechas y cifras sin inventar nada. Devuelve SOLO el texto."
+                    )
 
-                        prompt_es = (
-                            "Pasa este texto del inglés al español como apuntes de borrador claros y directos. "
-                            "Cambia el orden de las ideas dentro de cada párrafo y conserva todos los datos, nombres y fechas sin inventar nada. "
-                            "Devuelve SOLO el borrador en español."
-                        )
-                        borrador = llamar_gemini(client, texto_en, prompt_es, temperature=0.9)
-                    else:
-                        prompt_parafrasis = (
-                            "Reescribe este texto cambiando el orden de las cláusulas, los conectores y los límites de las oraciones. "
-                            "Conserva todos los hechos, nombres, fechas y cifras sin inventar nada. Devuelve SOLO el texto."
-                        )
-                        borrador = llamar_gemini(client, texto_base, prompt_parafrasis, temperature=0.95)
+                    # 1. CAPA B: Intenta Gemini (si no está en modo Solo Groq); si falla o da 429, cae a Groq
+                    borrador = None
+                    if not solo_groq and client is not None:
+                        try:
+                            if usar_retrotraduccion:
+                                texto_en = llamar_gemini(client, texto_base, prompt_en, temperature=0.7)
+                                borrador = llamar_gemini(client, texto_en, prompt_es, temperature=0.9)
+                            else:
+                                borrador = llamar_gemini(client, texto_base, prompt_parafrasis, temperature=0.95)
+                        except Exception as e_gem:
+                            if MI_GROQ_KEY:
+                                st.info("⚡ Cuota de Gemini agotada o no disponible. Usando Groq automáticamente.")
+                                borrador = None
+                            else:
+                                raise e_gem
 
-                    # 2. REDACCIÓN FINAL ANTI-ENUMERACIÓN Y ANTI-SIMETRÍA (Groq abierto; respaldo Gemini)
+                    if borrador is None:
+                        if usar_retrotraduccion:
+                            texto_en, _ = llamar_groq_dinamico(MI_GROQ_KEY, prompt_en, texto_base, temperature=0.7)
+                            borrador, _ = llamar_groq_dinamico(MI_GROQ_KEY, prompt_es, texto_en, temperature=0.9)
+                        else:
+                            borrador, _ = llamar_groq_dinamico(MI_GROQ_KEY, prompt_parafrasis, texto_base, temperature=0.95)
+
+                    # 2. REDACCIÓN FINAL ANTI-ENUMERACIÓN Y ANTI-SIMETRÍA
                     prompt_final = """
                     Eres un ensayista escribiendo en español natural, directo y sin adornos de plantilla. Reescribe el borrador conservando todos los hechos, nombres, fechas y citas, pero eliminando por completo la cadencia de IA.
 
@@ -480,8 +509,11 @@ with col_btn1:
                                 MI_GROQ_KEY, prompt_final, borrador, temperature=1.05
                             )
                         except Exception as e_groq:
-                            st.warning(f"⚠️ Groq falló en el paso final ({e_groq}). Usando Gemini como respaldo.")
-                            texto_generado = None
+                            if client is not None:
+                                st.warning(f"⚠️ Groq falló en el paso final ({e_groq}). Usando Gemini como respaldo.")
+                                texto_generado = None
+                            else:
+                                raise e_groq
 
                     if texto_generado is None:
                         texto_generado = llamar_gemini(
@@ -499,7 +531,7 @@ with col_btn1:
                     )
                     
                     st.session_state["texto_humanizado"] = texto_limpio
-                    st.toast(f"✅ Flujo completado: Gemini → {modelo_final}", icon="✨")
+                    st.toast(f"✅ Procesado con {modelo_final}", icon="✨")
                     st.rerun() 
                     
                 except Exception as e:
