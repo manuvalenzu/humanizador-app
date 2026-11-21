@@ -30,6 +30,9 @@ MI_API_KEY = leer_secreto("GEMINI_API_KEY")
 MI_GROQ_KEY = leer_secreto("GROQ_API_KEY")
 GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-3.6-flash")
 
+# Límite del texto de entrada (caracteres, contando espacios)
+MAX_CARACTERES = 8000
+
 # ==========================================
 # AUTO-DETECCIÓN DE MODELOS ACTIVOS EN GROQ
 # ==========================================
@@ -100,7 +103,7 @@ def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.0):
         }
         for intento in range(2):
             try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=60)
+                resp = requests.post(url, headers=headers, json=payload, timeout=120)
             except requests.RequestException as e:
                 ultimo_error = f"Groq ({modelo}) sin respuesta: {e}"
                 break
@@ -1029,7 +1032,7 @@ with col1:
     )
     texto_original = st.text_area(
         "Texto original", height=400, label_visibility="collapsed",
-        max_chars=5000, key="input_original_key",
+        max_chars=MAX_CARACTERES, key="input_original_key",
         placeholder="Pega aquí el texto que quieres reescribir.",
     )
     col_btn1, col_btn2 = st.columns([3, 1], gap="small")
