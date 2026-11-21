@@ -3,6 +3,7 @@ from google import genai
 from google.genai import types
 import streamlit.components.v1 as components
 import requests
+import math
 import statistics
 import time
 import json
@@ -263,6 +264,15 @@ FRASES_VETADAS = [
     "clave para", "de manera significativa", "de forma significativa", "en la era",
     "el desafío consiste", "abre la puerta", "abre posibilidades", "es una oportunidad",
     "cada vez más", "hoy en día", "en un mundo", "transformador", "revolucionar",
+    # Estructuras de "ensayo clásico"
+    "se sitúa entre", "se sitúa como", "entre los episodios más", "uno de los episodios más",
+    "uno de los acontecimientos más", "fracturó profundamente", "profundamente", "hito fundamental",
+    "marcó un hito", "un hito", "representa un testimonio", "constituye un testimonio", "es un testimonio",
+    "un antes y un después", "dejó una huella", "huella imborrable", "sentó las bases", "no puede entenderse sin",
+    "se erige", "da cuenta de", "pone de manifiesto", "en el marco de", "a lo largo de la historia",
+    "sin precedentes", "de gran relevancia", "de suma importancia", "es posible afirmar", "resulta evidente",
+    "cabe mencionar", "vale la pena", "trascendental", "ineludible", "multifacético", "complejo entramado",
+    "en última instancia", "en este marco", "así pues", "por consiguiente", "asimismo", "no obstante",
 ]
 PATRON_ENUMERACION = re.compile(
     r"\b[\wáéíóúñü]+(?: [\wáéíóúñü]+){0,2}, [\wáéíóúñü]+(?: [\wáéíóúñü]+){0,2},? (?:y|e) [\wáéíóúñü]+",
@@ -331,7 +341,14 @@ def datos_faltantes(original, resultado):
     return [d for d in extraer_datos_clave(original) if _normalizar(d) not in res]
 
 
-def problemas_de_fidelidad(texto, referencia):
+def rango_parrafos(par_ref, partir):
+    """Cuántos párrafos se aceptan. Con la capa de estructura, se permite dividir (4 -> 5 o 6)."""
+    if not partir:
+        return par_ref, par_ref
+    return par_ref, max(par_ref + 2, math.ceil(par_ref * 1.6))
+
+
+def problemas_de_fidelidad(texto, referencia, partir=False):
     """Compara contra el original: largo, párrafos y datos perdidos."""
     problemas = []
     p_ref, p_txt = contar_palabras(referencia), contar_palabras(texto)
@@ -341,10 +358,16 @@ def problemas_de_fidelidad(texto, referencia):
             f"Desarrolla de nuevo cada idea hasta llegar a unas {p_ref} palabras, sin agregar datos nuevos."
         )
     par_ref, par_txt = len(dividir_parrafos(referencia)), len(dividir_parrafos(texto))
-    if par_ref and par_txt != par_ref:
+    minimo, maximo = rango_parrafos(par_ref, partir)
+    if par_ref and par_txt < minimo:
         problemas.append(
-            f"El original tiene {par_ref} párrafo(s) y este texto tiene {par_txt}. "
-            f"Deja exactamente {par_ref} párrafos, uno por cada párrafo del original."
+            f"El original tiene {par_ref} párrafo(s) y este texto solo {par_txt}: se juntaron o se perdieron ideas. "
+            f"Vuelve a separar el contenido en al menos {minimo} párrafos, sin quitar nada."
+        )
+    elif par_ref and par_txt > maximo:
+        problemas.append(
+            f"El texto quedó demasiado fragmentado ({par_txt} párrafos para {par_ref} del original). "
+            f"Únelo en {maximo} párrafos como máximo."
         )
     faltan = datos_faltantes(referencia, texto)
     if faltan:
@@ -357,9 +380,9 @@ def dividir_oraciones(texto):
     return [p for p in partes if len(p.split()) >= 2]
 
 
-def auditar_texto(texto, referencia=None):
+def auditar_texto(texto, referencia=None, partir=False):
     """Devuelve (lista_de_problemas, métricas). Con referencia, revisa también la fidelidad."""
-    problemas = problemas_de_fidelidad(texto, referencia) if referencia else []
+    problemas = problemas_de_fidelidad(texto, referencia, partir) if referencia else []
     oraciones = dividir_oraciones(texto)
     largos = [len(o.split()) for o in oraciones]
 
@@ -390,6 +413,20 @@ def auditar_texto(texto, referencia=None):
 
     for m in list(PATRON_GERUNDIO.finditer(texto))[:3]:
         problemas.append(f'Gerundio de remate tras coma ("{m.group(1)}"): cámbialo por punto y un verbo conjugado.')
+
+    if len(oraciones) >= 4:
+        ARRANQUES = ("el", "la", "los", "las", "se")
+        con_arranque = [o for o in oraciones if o.split()[0].lower().strip(',."¿¡(') in ARRANQUES]
+        proporcion = len(con_arranque) / len(oraciones)
+        if proporcion > 0.30:
+            ejemplos = "; ".join(f'"{o[:60]}..."' for o in con_arranque[:4])
+            problemas.append(
+                f"{len(con_arranque)} de {len(oraciones)} oraciones ({round(proporcion * 100)}%) empiezan con "
+                "El, La, Los, Las o Se. Deja menos del 30%: cambia el comienzo de varias, abriendo con una fecha, "
+                "un lugar, un nombre propio, un complemento, un verbo o una subordinada (\"En 1789, ...\", "
+                "\"Para los campesinos, ...\", \"Cuando cayó la fortaleza, ...\", \"Robespierre ...\"). "
+                f"Por ejemplo estas: {ejemplos}"
+            )
 
     if len(oraciones) >= 5:
         inicios = [o.split()[0].lower().strip(",.") for o in oraciones]
@@ -728,6 +765,11 @@ with st.sidebar:
         value=True,
         help="Capa B: desarma el texto pasándolo por el inglés antes de la redacción final.",
     )
+    usar_estructura = st.toggle(
+        "Romper estructura de párrafos",
+        value=True,
+        help="Capa de estructura: divide los párrafos (4 pasan a 5 o 6) y varía mucho el largo de las oraciones, sin resumir.",
+    )
     usar_auditoria = st.toggle(
         "Revisión y corrección automática",
         value=True,
@@ -767,9 +809,9 @@ st.markdown(
 # ==========================================
 REGLA_NO_RESUMIR = """
 REGLA MÁXIMA (por encima de todas las demás): PROHIBIDO RESUMIR.
-- Mantén la misma longitud, la misma cantidad de párrafos y el mismo nivel de detalle que el texto original.
-- No omitas ninguna idea, argumento, ejemplo, dato ni matiz. Cada párrafo del original tiene su párrafo en el resultado, en el mismo orden y con una extensión parecida.
-- Si el original tiene 4 párrafos, el resultado tiene 4 párrafos con la misma extensión.
+- Mantén la misma longitud total y el mismo nivel de detalle que el texto original.
+- No omitas ninguna idea, argumento, ejemplo, dato ni matiz, y respeta el orden de las ideas.
+- Nunca juntes párrafos ni dejes menos párrafos que el original. Dividir un párrafo largo en dos sí está permitido.
 - Conserva TAL CUAL todas las fechas, años, cifras, nombres de personas, lugares, instituciones, obras y citas. Puedes moverlos dentro de la oración, pero nunca borrarlos ni cambiarlos.
 - Cambiar el estilo nunca justifica acortar. Si dudas, deja la idea más desarrollada, no menos.
 """
@@ -792,22 +834,45 @@ PROMPT_PARAFRASIS = (
     "Mantén la misma cantidad de párrafos y la misma extensión: no resumas ni omitas nada. "
     "Conserva todos los hechos, nombres, instituciones, fechas, citas y cifras sin inventar nada. Devuelve SOLO el texto."
 )
-PROMPT_FINAL = """
-Eres un ensayista que escribe en español natural, directo y sin adornos de plantilla. Reescribe el borrador conservando todo su contenido, pero eliminando por completo la cadencia de IA.
+PROMPT_ESTRUCTURA = """
+Eres un editor que desarma la estructura de un ensayo escrito por IA, sin quitarle contenido.
 """ + REGLA_NO_RESUMIR + """
+QUÉ DEBES HACER:
+1. ROMPE LA ESTRUCTURA DE LOS PÁRRAFOS: si el original tiene 4 párrafos, el resultado tiene 5 o 6 párrafos más cortos. Divide los párrafos largos por donde cambia la idea. Que los párrafos no midan lo mismo: alguno de dos oraciones, otro de cinco.
+2. VARÍA EL LARGO DE LAS ORACIONES DE FORMA EXTREMA: mezcla oraciones de 4 a 7 palabras con otras de 30 a 40. Nunca tres oraciones seguidas de largo parecido.
+3. CAMBIA LA ARQUITECTURA DE CADA PÁRRAFO: no empieces cada párrafo con una oración que lo resume ni lo cierres con una que concluye. Abre con un hecho, una fecha, un nombre o una consecuencia, y deja la explicación para después.
+4. MUEVE LAS PIEZAS DENTRO DE CADA ORACIÓN: pon a veces la fecha o el lugar al inicio, a veces el sujeto al final, y otras usa una subordinada al comienzo.
+5. Conserva todas las fechas, nombres, instituciones, cifras y citas tal cual.
+
+Devuelve ÚNICAMENTE el texto reestructurado, con los párrafos separados por una línea en blanco.
+"""
+
+PROMPT_FINAL = """
+Eres un historiador que escribe para una revista de divulgación seria: lenguaje directo y claro, cercano al que usa un buen profesor cuando explica en clase, sin perder la formalidad académica. Reescribe el borrador conservando todo su contenido, pero eliminando por completo la cadencia de IA y la estructura de "ensayo clásico".
+""" + REGLA_NO_RESUMIR + """
+ESTRUCTURA DE PÁRRAFOS: mantén la división en párrafos del borrador (no vuelvas a juntarlos).
+
+DESTRUYE EL "ENSAYO CLÁSICO" (OBLIGATORIO):
+A. PROHIBIDAS las fórmulas de importancia y grandeza. No uses ninguna de estas ni variantes parecidas:
+   "se sitúa entre los episodios más...", "uno de los acontecimientos más...", "el conflicto fracturó profundamente...", "es un hito fundamental", "marcó un hito", "representa un testimonio", "constituye un testimonio", "un antes y un después", "dejó una huella imborrable", "sentó las bases", "no puede entenderse sin", "se erige como", "da cuenta de", "pone de manifiesto", "en el marco de", "a lo largo de la historia", "sin precedentes", "de gran relevancia", "de suma importancia", "trascendental", "es posible afirmar", "resulta evidente", "cabe mencionar", "asimismo", "no obstante", "por consiguiente", "en última instancia".
+B. EN VEZ DE ADJETIVOS DE IMPORTANCIA, MUESTRA EL HECHO: no digas que algo "fue fundamental" o "transformó profundamente"; di qué cambió, quién lo hizo, cuándo y qué pasó después.
+   - Mal: "La Revolución Francesa es un hito fundamental que fracturó profundamente la sociedad europea."
+   - Bien: "Después de 1789, en Francia ya no mandaba solo el rey. Los nobles perdieron sus privilegios y muchos huyeron al extranjero."
+   - Mal: "Este documento representa un testimonio de la lucha por los derechos."
+   - Bien: "El documento recoge lo que pedían los diputados del Tercer Estado: igualdad ante la ley y libertad de expresión."
+C. SUJETO Y VERBO CLAROS: prefiere "los diputados aprobaron" a "se produjo la aprobación por parte de los diputados". Evita la voz pasiva con "se" y las nominalizaciones (la implementación, la consolidación, la configuración).
+D. INICIOS DE ORACIÓN: menos de un tercio de las oraciones puede empezar con "El", "La", "Los", "Las" o "Se". Abre las demás con una fecha, un lugar, un nombre propio, un complemento, un verbo o una subordinada.
+E. CONECTORES SENCILLOS: usa "pero", "por eso", "así", "después", "entonces", "aun así", "en cambio". Nada de conectores de manual.
+
 REGLAS DE ESTILO (aplícalas sin acortar el texto):
 1. ENUMERACIONES: si el borrador enumera 3 o 4 elementos en una sola frase ("A, B, C y D"), repártelos en dos oraciones con verbos distintos. Todos los elementos se mantienen.
-   - Mal: "Hay sobredependencia tecnológica, desigualdad en el acceso, sesgo algorítmico y riesgos de privacidad."
-   - Bien: "El sesgo de los algoritmos y el manejo de datos privados preocupan a las facultades. A eso se le agrega que no todos acceden por igual y algunos alumnos dependen demasiado del programa."
-2. NADA DE PARES SIMÉTRICOS AL CIERRE DE LAS ORACIONES ("...la enseñanza y la investigación"): separa las ideas en frases con distinto verbo, sin perder ninguna.
-3. EXPRESIONES VETADAS (NO USES NINGUNA): "al tiempo que", "a esto se suma", "herramientas como", "a su vez", "ante este panorama", "entre los que destacan", "cabe destacar", "es fundamental", "es crucial", "enfrenta un reto", "enfoque centrado en", "fomentar", "abordar", "mediante", "reside en", "en este sentido", "en este contexto", "por otro lado", "no solo... sino también", "juega un papel", "hoy en día", "cada vez más", "panorama", "paradigma", "potenciar", "integral", "clave para", "en conclusión", "en definitiva". Reemplázalas por una expresión común; no borres la idea que acompañan.
-4. CERO GERUNDIOS DE REMATE: no cierres una frase con coma + gerundio ("..., promoviendo..."). Usa punto seguido y un verbo conjugado.
-5. CIERRE SIN MORALEJA: si el último párrafo termina en una recomendación genérica, reescríbela como una afirmación concreta. No borres el párrafo de cierre.
-6. VOZ REAL: habla de personas e instituciones concretas haciendo cosas reales. Usa verbos simples (cambia, sirve, falla, obliga, pide, usa, deja).
-7. RITMO IRREGULAR: alterna sin patrón fijo frases cortas (5 a 9 palabras) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas.
-8. INICIOS VARIADOS: no empieces dos oraciones seguidas con la misma palabra. A veces abre con un complemento ("En 1789, ...", "Para muchos docentes, ...").
-9. VOCABULARIO: prefiere la palabra común sobre la culta ("usar" en vez de "utilizar", "hacer" en vez de "llevar a cabo").
-10. FORMATO: solo prosa en párrafos separados por una línea en blanco. Sin rayas largas (— o –), sin negritas, sin listas, sin títulos y sin comillas curvas.
+2. NADA DE PARES SIMÉTRICOS AL CIERRE DE LAS ORACIONES ("...la política y la sociedad"): separa las ideas en frases con distinto verbo, sin perder ninguna.
+3. EXPRESIONES VETADAS (NO USES NINGUNA): "al tiempo que", "a esto se suma", "a su vez", "ante este panorama", "entre los que destacan", "cabe destacar", "es fundamental", "es crucial", "enfrenta un reto", "fomentar", "abordar", "mediante", "reside en", "en este sentido", "en este contexto", "por otro lado", "no solo... sino también", "juega un papel", "hoy en día", "cada vez más", "panorama", "paradigma", "potenciar", "integral", "clave para", "en conclusión", "en definitiva". Reemplázalas por una expresión común; no borres la idea que acompañan.
+4. CERO GERUNDIOS DE REMATE: no cierres una frase con coma + gerundio ("..., provocando..."). Usa punto seguido y un verbo conjugado.
+5. CIERRE SIN MORALEJA: si el último párrafo termina en una reflexión genérica, reescríbela como una afirmación concreta. No borres el párrafo de cierre.
+6. RITMO IRREGULAR: alterna sin patrón fijo frases cortas (4 a 8 palabras) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas.
+7. VOCABULARIO: prefiere la palabra común sobre la culta ("usar" en vez de "utilizar", "hacer" en vez de "llevar a cabo", "empezar" en vez de "iniciar").
+8. FORMATO: solo prosa en párrafos separados por una línea en blanco. Sin rayas largas (— o –), sin negritas, sin listas, sin títulos y sin comillas curvas.
 
 Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
 """
@@ -823,12 +888,17 @@ Devuelve ÚNICAMENTE el texto corregido.
 """
 
 
-def instrucciones_de_medida(original):
+def instrucciones_de_medida(original, partir=False):
     """Le dice al modelo cuánto mide el original y qué datos no puede perder."""
     datos = extraer_datos_clave(original)
+    par = len(dividir_parrafos(original))
+    if partir:
+        objetivo = f"entre {par + 1} y {max(par + 1, math.ceil(par * 1.5))} párrafos más cortos"
+    else:
+        objetivo = f"exactamente {par} párrafo(s)"
     lineas = [
-        f"MEDIDA DEL ORIGINAL: {len(dividir_parrafos(original))} párrafo(s) y unas {contar_palabras(original)} palabras. "
-        "El resultado debe tener la misma cantidad de párrafos y una extensión parecida (entre 95% y 115%)."
+        f"MEDIDA DEL ORIGINAL: {par} párrafo(s) y unas {contar_palabras(original)} palabras. "
+        f"El resultado debe tener {objetivo} y una extensión total parecida (entre 95% y 115%)."
     ]
     if datos:
         lineas.append("DATOS OBLIGATORIOS (deben aparecer tal cual): " + ", ".join(datos) + ".")
@@ -867,35 +937,55 @@ def procesar(texto_original, estado):
     avisos = []
     client = genai.Client(api_key=MI_API_KEY) if MI_API_KEY else None
     pref_b = "groq" if (solo_groq or client is None) else "gemini"
+    partir = usar_estructura
 
     estado.update(label="Limpiando caracteres ocultos y formato")
     texto_base, _ = clean_text(texto_original)
-    medida = instrucciones_de_medida(texto_base)
+    medida_igual = instrucciones_de_medida(texto_base, partir=False)
+    medida = instrucciones_de_medida(texto_base, partir=partir)
 
+    # CAPA B: retrotraducción o paráfrasis (conserva los párrafos del original)
     if usar_retrotraduccion:
         estado.update(label="Pasando el texto al inglés")
         texto_en, _ = generar(PROMPT_EN, texto_base, 0.6, pref_b, client, avisos)
         estado.update(label="Volviendo al español con otra estructura")
-        borrador, _ = generar(PROMPT_ES, f"{medida}\n\nTEXTO:\n{texto_en}", 0.85, pref_b, client, avisos)
+        borrador, _ = generar(PROMPT_ES, f"{medida_igual}\n\nTEXTO:\n{texto_en}", 0.85, pref_b, client, avisos)
     else:
         estado.update(label="Reordenando cláusulas y conectores")
-        borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida}\n\nTEXTO:\n{texto_base}", 0.9, pref_b, client, avisos)
+        borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida_igual}\n\nTEXTO:\n{texto_base}", 0.85, pref_b, client, avisos)
     borrador, _ = clean_text(borrador)
 
-    # Si el borrador ya perdió algo, la redacción final trabaja con el original al lado
-    estado.update(label="Redactando la versión final")
     pref_final = "groq" if MI_GROQ_KEY else "gemini"
+
+    # CAPA DE DESTRUCCIÓN DE ESTRUCTURA: más párrafos, más cortos, oraciones de largo extremo
+    if partir:
+        estado.update(label="Rompiendo la estructura de párrafos y oraciones")
+        entrada_estructura = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido):\n{texto_base}\n\nTEXTO A REESTRUCTURAR:\n{borrador}"
+        try:
+            reestructurado, _ = generar(PROMPT_ESTRUCTURA, entrada_estructura, 0.85, pref_final, client, avisos)
+            reestructurado, _ = clean_text(reestructurado)
+            # Solo se usa si no resumió
+            if contar_palabras(reestructurado) >= 0.88 * contar_palabras(texto_base):
+                borrador = reestructurado
+            else:
+                avisos.append("La capa de estructura acortó el texto, así que se usó el borrador anterior.")
+        except Exception as e_est:
+            avisos.append(f"No se pudo aplicar la capa de estructura ({e_est}).")
+
+    # REDACCIÓN FINAL (temperatura 0.85: menos frases hechas)
+    estado.update(label="Redactando la versión final")
     entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
-    texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.95, pref_final, client, avisos)
+    texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.85, pref_final, client, avisos)
     texto_generado, _ = clean_text(texto_generado)
 
-    problemas_iniciales, _ = auditar_texto(texto_generado, texto_base)
+    # CAPA C: revisión en código y corrección puntual
+    problemas_iniciales, _ = auditar_texto(texto_generado, texto_base, partir)
     rondas = 3 if usar_auditoria else 1
     for ronda in range(rondas):
-        problemas, _ = auditar_texto(texto_generado, texto_base)
+        problemas, _ = auditar_texto(texto_generado, texto_base, partir)
         # Sin la revisión de estilo activada, igual se corrige si quedó resumido o perdió datos
         if not usar_auditoria:
-            problemas = problemas_de_fidelidad(texto_generado, texto_base)
+            problemas = problemas_de_fidelidad(texto_generado, texto_base, partir)
         if not problemas:
             break
         estado.update(label=f"Corrigiendo {len(problemas)} punto(s) detectados en la revisión")
@@ -910,9 +1000,9 @@ def procesar(texto_original, estado):
             avisos.append(f"No se pudo hacer la corrección automática ({e_corr}).")
             break
         corregido, _ = clean_text(corregido)
-        nuevos, _ = auditar_texto(corregido, texto_base)
-        fidelidad_antes = len(problemas_de_fidelidad(texto_generado, texto_base))
-        fidelidad_despues = len(problemas_de_fidelidad(corregido, texto_base))
+        nuevos, _ = auditar_texto(corregido, texto_base, partir)
+        fidelidad_antes = len(problemas_de_fidelidad(texto_generado, texto_base, partir))
+        fidelidad_despues = len(problemas_de_fidelidad(corregido, texto_base, partir))
         # Se acepta si mejora y no vuelve a acortar el texto
         no_acorta = contar_palabras(corregido) >= 0.95 * contar_palabras(texto_generado) or fidelidad_despues < fidelidad_antes
         if len(nuevos) < len(problemas) and fidelidad_despues <= fidelidad_antes and no_acorta:
@@ -921,7 +1011,7 @@ def procesar(texto_original, estado):
             break
 
     texto_limpio, _ = clean_text(texto_generado)
-    problemas_finales, metricas = auditar_texto(texto_limpio, texto_base)
+    problemas_finales, metricas = auditar_texto(texto_limpio, texto_base, partir)
     metricas["palabras_original"] = contar_palabras(texto_base)
     metricas["palabras_resultado"] = contar_palabras(texto_limpio)
     auditoria = {"antes": len(problemas_iniciales), "despues": problemas_finales, "metricas": metricas}
