@@ -67,6 +67,8 @@ def _proveedores_pausados():
 PAUSADOS = _proveedores_pausados()   # sobrevive entre textos (Streamlit vuelve a correr el archivo en cada clic)
 PAUSA_CUOTA = 120      # segundos sin usar un proveedor que respondió "cuota agotada"
 PAUSA_LENTO = 180      # segundos sin usar un proveedor que no respondió a tiempo
+PAUSA_DIARIA = 1800    # media hora sin usar un proveedor que agotó la cuota del día
+MAX_ESPERAS = 2        # veces que se espera la cuota por minuto en un mismo texto
 PAUSA_CLAVE = 1800     # media hora sin usar un proveedor con la clave rechazada
 
 
@@ -276,6 +278,14 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
             return contenido, f"{p['nombre']} ({modelo})"
         # La cuota y la clave son de la cuenta: no sirve probar otro modelo del mismo proveedor
         if resp.status_code == 429:
+            try:
+                reintento = float(resp.headers.get("retry-after", "0"))
+            except (TypeError, ValueError):
+                reintento = 0
+            aviso429 = resp.text.lower()
+            if reintento > PAUSA_CUOTA or any(x in aviso429 for x in ("per day", "tpd", "rpd", "daily")):
+                # Cuota diaria (o espera larga): no sirve esperar un minuto, se usa otro proveedor
+                raise ProveedorNoDisponible(f"{p['nombre']}: cuota diaria agotada.", max(reintento, PAUSA_DIARIA))
             raise ProveedorNoDisponible(f"{p['nombre']}: cuota agotada por ahora.", PAUSA_CUOTA)
         if resp.status_code in (401, 403):
             raise ProveedorNoDisponible(f"{p['nombre']}: la clave fue rechazada.", PAUSA_CLAVE)
@@ -1396,12 +1406,13 @@ def pausar_proveedor(pid, segundos):
     PAUSADOS[pid] = max(PAUSADOS.get(pid, 0), time.time() + segundos)
 
 
-def esperar_cuota(pid, avanzar):
+def esperar_cuota(pid, avanzar, esperas):
     """Si el proveedor principal está en pausa por cuota por minuto, espera a que se renueve (65 s como máximo)
     en vez de saltar a los proveedores lentos. Las pausas largas (clave rechazada) no se esperan."""
     resta = PAUSADOS.get(pid, 0) - time.time()
-    if not 0 < resta <= PAUSA_CUOTA:
+    if not 0 < resta <= PAUSA_CUOTA or esperas[0] >= MAX_ESPERAS:
         return
+    esperas[0] += 1
     fin = time.time() + min(resta, 65)
     while time.time() < fin:
         avanzar(f"Esperando que se renueve la cuota de {PROVEEDORES[pid]['nombre']} (faltan {round(fin - time.time())} s)")
@@ -1684,6 +1695,7 @@ def procesar(texto_original, estado):
     avisos = []
     plan = armar_plan()
     inicio_total = time.monotonic()
+    esperas = [0]
 
     def avanzar(texto):
         estado.update(label=f"{texto} ({round(time.monotonic() - inicio_total)} s)")
@@ -1720,7 +1732,7 @@ def procesar(texto_original, estado):
 
         # Un bloque que falló (por cuota, casi siempre) se reintenta solo, tras una pausa corta
         for n, i in enumerate(sorted(fallidos)):
-            esperar_cuota(plan["final"][0], avanzar)
+            esperar_cuota(plan["final"][0], avanzar, esperas)
             avanzar(f"Reintentando un bloque que se quedó sin cuota ({n + 1} de {len(fallidos)})")
             time.sleep(2)
             try:
@@ -1767,7 +1779,7 @@ def procesar(texto_original, estado):
 
     # PASADAS EXTRA: el resultado vuelve a entrar al humanizador (sin volver a dividir párrafos)
     for numero in range(2, pasadas + 1):
-        esperar_cuota(plan["final"][0], avanzar)
+        esperar_cuota(plan["final"][0], avanzar, esperas)
         try:
             otro, modelo_p, usados_p, tiempos_p, _, _ = una_pasada(texto_limpio, False, numero)
         except Exception as e_pasada:
