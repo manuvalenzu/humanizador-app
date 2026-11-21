@@ -316,21 +316,21 @@ with col_btn1:
                     )
                     ideas_crudas = resp_ideas.text
 
-                    # PASO 2: RECONSTRUIR DESDE CERO CON ALTA VARIABILIDAD (Burstiness)
+                    # PASO 2: RECONSTRUIR SIN NOMINALIZACIÓN (Anti-QuillBot y Anti-ZeroGPT)
                     prompt_redaccion = """
-                    Eres un investigador escribiendo un borrador serio pero directo. Redacta un texto continuo usando ÚNICAMENTE las ideas de la lista que recibirás.
+                    Eres un académico escribiendo una columna de opinión clara y directa. Redacta un texto continuo usando ÚNICAMENTE las ideas de la lista que recibirás.
 
-                    REGLAS DE RITMO Y ESTILO:
-                    - Prohibido usar listas de tres elementos (ej: "A, B y C"). Usa uno o dos.
-                    - Prohibido usar frases de contraste simétrico ("Abre posibilidades, pero plantea retos").
-                    - Alterna bruscamente el largo de las oraciones: escribe una oración larga y compleja (25-35 palabras) y síguela con una muy corta (5-8 palabras).
-                    - Empieza los párrafos directamente con el sujeto o el problema, nunca con fórmulas vacías ("La inteligencia artificial entró de lleno...").
-                    - No escribas párrafo de conclusión ni moraleja final. Termina en el último argumento.
-                    - No uses negritas, viñetas ni comillas curvas.
-
-                    EJEMPLO DE CÓMO DEBES ESCRIBIR:
-                    Mal (IA): "La tecnología transforma la educación y plantea desafíos éticos, pedagógicos y técnicos que debemos abordar."
-                    Bien (Humano): "El problema real en las universidades no es el software. Es que nadie actualizó cómo se evalúa a los estudiantes cuando una máquina puede redactar un ensayo en diez segundos."
+                    REGLAS OBLIGATORIAS PARA SONAR HUMANO:
+                    1. PROHIBIDO NOMINALIZAR: No uses sustantivos abstractos donde cabe un verbo.
+                       - Mal: "mediante la integración de sistemas que reconfiguran la gestión"
+                       - Bien: "al sumar herramientas que cambian cómo se administra la universidad"
+                       - Mal: "reside en la generación involuntaria de datos incorrectos"
+                       - Bien: "ocurre cuando el sistema inventa datos falsos sin que el usuario lo note"
+                    2. SUJETOS CONCRETOS: Habla de personas (profesores, estudiantes, investigadores, facultades) en lugar de conceptos abstractos ("el enfoque", "los riesgos éticos", "las evaluaciones").
+                    3. CERO CONECTORES DE IA: Prohibido usar "mediante", "reside en", "reconfiguran", "abarcan", "junto con", "en lugar de insistir en", "deben reorientarse hacia".
+                    4. RITMO NATURAL, NO MECÁNICO: No hagas el patrón obvio de "una frase gigante y una frase de 5 palabras". Usa oraciones medianas (12 a 20 palabras) mezcladas con algunas cortas y alguna más larga que incluya una pausa o aclaración natural.
+                    5. SIN CIERRE DE MORALEJA: No termines con frases genéricas ni recomendaciones obvias. Termina en el último dato o argumento.
+                    6. FORMATO: Solo prosa limpia. Sin negritas, sin listas y sin comillas curvas.
 
                     Devuelve SOLO el texto final.
                     """
@@ -340,7 +340,7 @@ with col_btn1:
                         contents=f"Ideas a desarrollar:\n{ideas_crudas}",
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_redaccion,
-                            temperature=1.15,
+                            temperature=1.0,
                             top_p=0.95,
                             top_k=64,
                         )
