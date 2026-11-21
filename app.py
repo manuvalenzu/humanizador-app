@@ -56,7 +56,24 @@ ORDEN_CALIDAD = ["anthropic", "openai", "deepseek", "nvidia", "mistral", "gemini
 # Orden por velocidad: los pasos intermedios usan primero los más rápidos
 ORDEN_VELOCIDAD = ["groq", "cerebras", "gemini", "openai", "anthropic", "deepseek", "mistral", "nvidia", "openrouter"]
 # Tiempo máximo por llamada (segundos). Si un modelo no responde, se pasa al siguiente.
-TIEMPO_MAXIMO = {"intermedio": 45, "final": 90}
+TIEMPO_MAXIMO = {"intermedio": 30, "final": 60}
+# Proveedores en pausa: {id: hora hasta la que no se usan}. Se comparte entre bloques y entre textos.
+@st.cache_resource(show_spinner=False)
+def _proveedores_pausados():
+    return {}
+
+
+PAUSADOS = _proveedores_pausados()   # sobrevive entre textos (Streamlit vuelve a correr el archivo en cada clic)
+PAUSA_CUOTA = 120      # segundos sin usar un proveedor que respondió "cuota agotada"
+PAUSA_LENTO = 180      # segundos sin usar un proveedor que no respondió a tiempo
+PAUSA_CLAVE = 1800     # media hora sin usar un proveedor con la clave rechazada
+
+
+class ProveedorNoDisponible(RuntimeError):
+    """Error que deja al proveedor en pausa: cuota agotada, lentitud o clave rechazada."""
+    def __init__(self, mensaje, pausa):
+        super().__init__(mensaje)
+        self.pausa = pausa
 
 CLAVES = {pid: leer_secreto(p["clave"]) for pid, p in PROVEEDORES.items()}
 
@@ -172,7 +189,7 @@ def _post_con_ajustes(url, headers, payload, tipo, limite=90):
                 espera = float(resp.headers.get("retry-after", "0"))
             except (TypeError, ValueError):
                 espera = 0
-            if 0 < espera <= 15:
+            if 0 < espera <= 4:
                 time.sleep(espera + 0.5)
                 continue
         break
@@ -235,14 +252,19 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
                     except (ValueError, KeyError, IndexError):
                         contenido = ""
         except requests.Timeout:
-            # Si un modelo no respondió a tiempo, se pasa directo al siguiente proveedor
-            raise RuntimeError(f"{p['nombre']} ({modelo}) tardó más de {limite} s en responder.")
+            # Si un modelo no respondió a tiempo, el proveedor queda en pausa y se pasa al siguiente
+            raise ProveedorNoDisponible(f"{p['nombre']} ({modelo}) tardó más de {limite} s en responder.", PAUSA_LENTO)
         except requests.RequestException as e:
             ultimo_error = f"{p['nombre']} ({modelo}) sin respuesta: {e}"
             continue
         contenido = quitar_razonamiento(contenido)
         if contenido:
             return contenido, f"{p['nombre']} ({modelo})"
+        # La cuota y la clave son de la cuenta: no sirve probar otro modelo del mismo proveedor
+        if resp.status_code == 429:
+            raise ProveedorNoDisponible(f"{p['nombre']}: cuota agotada por ahora.", PAUSA_CUOTA)
+        if resp.status_code in (401, 403):
+            raise ProveedorNoDisponible(f"{p['nombre']}: la clave fue rechazada.", PAUSA_CLAVE)
         ultimo_error = (f"{p['nombre']} ({modelo}) HTTP {resp.status_code}: {resp.text[:200]}"
                         if resp.status_code != 200 else f"{p['nombre']} ({modelo}) devolvió una respuesta vacía.")
     raise RuntimeError(ultimo_error)
@@ -890,9 +912,12 @@ with st.sidebar:
     modelo_final_id = None
     proveedores_mezcla = []
     if conectados:
+        # Por defecto: un modelo de pago si lo hay (mejor calidad); si no, Groq (el gratis más rápido)
+        pagos = [p for p in ("anthropic", "openai", "deepseek") if p in conectados]
+        por_defecto = pagos[0] if pagos else ("groq" if "groq" in conectados else conectados[0])
         modelo_final_id = st.selectbox(
             "Modelo para la redacción final",
-            conectados, index=0, format_func=lambda pid: nombres[pid],
+            conectados, index=conectados.index(por_defecto), format_func=lambda pid: nombres[pid],
             help="Hace el paso más importante. Por defecto se elige el que mejor escribe en español.",
         )
         proveedores_mezcla = st.multiselect(
@@ -925,19 +950,28 @@ with st.sidebar:
                 # El elegido va primero; los demás quedan de respaldo
                 MODELOS_RESUELTOS[pid] = [elegido] + [m for m in mods if m != elegido]
 
+    modo_profundo = st.toggle(
+        "Modo profundo (más lento)",
+        value=False,
+        help="Apagado: una sola pasada por bloque, mucho más rápido. "
+             "Encendido: retrotraducción, capa de estructura y dos rondas de corrección (4 a 6 llamadas por bloque).",
+    )
     mezclar_modelos = st.toggle(
         "Un modelo distinto en cada paso",
         value=True,
+        disabled=not modo_profundo,
         help="Reparte traducción, estructura y redacción entre modelos distintos para no dejar la huella de uno solo.",
     )
     usar_retrotraduccion = st.toggle(
         "Retrotraducción español, inglés, español",
         value=True,
+        disabled=not modo_profundo,
         help="Capa B: desarma el texto pasándolo por el inglés antes de la redacción final.",
     )
     usar_estructura = st.toggle(
         "Romper estructura de párrafos",
         value=True,
+        disabled=not modo_profundo,
         help="Capa de estructura: divide los párrafos (4 pasan a 5 o 6) y varía mucho el largo de las oraciones, sin resumir.",
     )
     usar_auditoria = st.toggle(
@@ -1053,6 +1087,15 @@ REGLAS DE ESTILO (aplícalas sin acortar el texto):
 
 Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
 """
+PROMPT_RAPIDO = PROMPT_FINAL.replace(
+    "ESTRUCTURA DE PÁRRAFOS: mantén la división en párrafos del borrador (no vuelvas a juntarlos).",
+    """ESTRUCTURA (hazlo en esta misma pasada):
+- Reordena las ideas dentro de cada párrafo y cambia la construcción de cada oración; no sigas el orden de frases del original.
+- Divide solo los párrafos más largos, por donde cambia la idea. Nunca dejes una sola oración por párrafo en todo el texto.
+- Varía el largo de las oraciones de forma marcada: algunas de 4 a 8 palabras y otras de 25 a 35.
+- No empieces los párrafos con una oración que los resume ni los cierres con una que concluye.""",
+).replace("Reescribe el borrador", "Reescribe el texto")
+
 PROMPT_CORRECCION = """
 Eres un corrector de estilo. Te paso el texto ORIGINAL, un TEXTO reescrito y una lista de PROBLEMAS detectados por una revisión automática.
 Corrige SOLO esos problemas en el TEXTO y deja intacto todo lo demás.
@@ -1103,17 +1146,39 @@ def armar_plan():
     return plan
 
 
+def proveedor_en_pausa(pid):
+    return PAUSADOS.get(pid, 0) > time.time()
+
+
+def pausar_proveedor(pid, segundos):
+    PAUSADOS[pid] = max(PAUSADOS.get(pid, 0), time.time() + segundos)
+
+
 def generar(system_prompt, texto, temperature, paso, plan, avisos, usados, tiempos):
-    """Prueba los proveedores del paso en orden. Devuelve (texto, 'Proveedor (modelo)')."""
+    """Prueba los proveedores del paso en orden, saltando los que están en pausa."""
     errores = []
     limite = TIEMPO_MAXIMO["final"] if paso in ("final", "correccion") else TIEMPO_MAXIMO["intermedio"]
     inicio = time.monotonic()
+    disponibles = [p for p in plan[paso] if not proveedor_en_pausa(p)]
+    # Si todos están en pausa, se intenta igual con el orden normal
+    orden = disponibles or plan[paso]
     try:
-        for pid in plan[paso]:
+        for pid in orden:
             try:
                 resultado = llamar_proveedor(pid, system_prompt, texto, temperature, limite)
-            except Exception as e:
+            except ProveedorNoDisponible as e:
+                pausar_proveedor(pid, e.pausa)
                 errores.append(str(e))
+                continue
+            except Exception as e:
+                msg = str(e)
+                # Gemini informa la cuota agotada como excepción de su propia librería
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+                    pausar_proveedor(pid, 1800 if "day" in msg.lower() or "quota" in msg.lower() else PAUSA_CUOTA)
+                    msg = f"{PROVEEDORES[pid]['nombre']}: cuota agotada por ahora."
+                elif "timeout" in msg.lower() or "timed out" in msg.lower():
+                    pausar_proveedor(pid, PAUSA_LENTO)
+                errores.append(msg)
                 continue
             if errores:
                 aviso = f"{errores[0][:160]} Se usó otro modelo como respaldo."
@@ -1150,7 +1215,7 @@ def explicar_error(e):
     return causa, t[:600]
 
 
-PALABRAS_POR_BLOQUE = 320   # bloques cortos: los modelos resumen menos y responden más rápido
+PALABRAS_POR_BLOQUE = 420   # bloques medianos: los modelos no resumen y se hacen menos llamadas
 BLOQUES_EN_PARALELO = 2   # 2 a la vez: rápido sin agotar la cuota por minuto de los planes gratis
 
 
@@ -1194,8 +1259,16 @@ def plan_para_bloque(plan, indice):
 def procesar_bloque(texto_base, plan, partir, avisos, opciones):
     """Todo el flujo para un bloque. No toca la interfaz (corre en paralelo)."""
     usados, tiempos = {}, {}
-    medida_igual = instrucciones_de_medida(texto_base, partir=False)
     medida = instrucciones_de_medida(texto_base, partir=partir)
+
+    if not opciones["profundo"]:
+        # MODO RÁPIDO: una sola llamada que reescribe, reestructura y limpia a la vez
+        entrada = f"{medida}\n\nTEXTO A REESCRIBIR:\n{texto_base}"
+        texto_generado, modelo_final = generar(PROMPT_RAPIDO, entrada, 0.85, "final", plan, avisos, usados, tiempos)
+        texto_generado, _ = clean_text(texto_generado)
+        return revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos)
+
+    medida_igual = instrucciones_de_medida(texto_base, partir=False)
 
     # CAPA B: retrotraducción o paráfrasis
     if opciones["retro"]:
@@ -1220,14 +1293,20 @@ def procesar_bloque(texto_base, plan, partir, avisos, opciones):
     entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
     texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.85, "final", plan, avisos, usados, tiempos)
     texto_generado, _ = clean_text(texto_generado)
+    return revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos)
 
-    # CAPA C: revisión y corrección del bloque
+
+def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos):
+    """CAPA C: revisión en código y, solo si hace falta, una corrección."""
     problemas_iniciales, _ = auditar_texto(texto_generado, texto_base, partir)
-    for ronda in range(2 if opciones["auditoria"] else 1):
+    rondas = 2 if opciones["profundo"] else 1
+    for ronda in range(rondas):
         problemas, _ = auditar_texto(texto_generado, texto_base, partir)
+        fidelidad = problemas_de_fidelidad(texto_generado, texto_base, partir)
         if not opciones["auditoria"]:
-            problemas = problemas_de_fidelidad(texto_generado, texto_base, partir)
-        if not problemas:
+            problemas = fidelidad
+        # En modo rápido solo se corrige si se perdió contenido o hay varios problemas de estilo
+        if not problemas or (not opciones["profundo"] and not fidelidad and len(problemas) < 3):
             break
         lista = "\n".join(f"- {p}" for p in problemas)
         try:
@@ -1241,7 +1320,7 @@ def procesar_bloque(texto_base, plan, partir, avisos, opciones):
             break
         corregido, _ = clean_text(corregido)
         nuevos, _ = auditar_texto(corregido, texto_base, partir)
-        fid_antes = len(problemas_de_fidelidad(texto_generado, texto_base, partir))
+        fid_antes = len(fidelidad)
         fid_despues = len(problemas_de_fidelidad(corregido, texto_base, partir))
         no_acorta = contar_palabras(corregido) >= 0.95 * contar_palabras(texto_generado) or fid_despues < fid_antes
         if len(nuevos) < len(problemas) and fid_despues <= fid_antes and no_acorta:
@@ -1261,7 +1340,7 @@ def procesar(texto_original, estado):
         estado.update(label=f"{texto} ({round(time.monotonic() - inicio_total)} s)")
 
     partir = usar_estructura
-    opciones = {"retro": usar_retrotraduccion, "auditoria": usar_auditoria}
+    opciones = {"retro": usar_retrotraduccion, "auditoria": usar_auditoria, "profundo": modo_profundo}
 
     avanzar("Limpiando caracteres ocultos y formato")
     texto_base, _ = clean_text(texto_original)
@@ -1299,7 +1378,7 @@ def procesar(texto_original, estado):
     # Un bloque que falló (por cuota, casi siempre) se reintenta solo, tras una pausa corta
     for n, i in enumerate(sorted(fallidos)):
         avanzar(f"Reintentando un bloque que se quedó sin cuota ({n + 1} de {len(fallidos)})")
-        time.sleep(10)
+        time.sleep(4)
         try:
             resultados[i] = procesar_bloque(bloques[i][1], plan_para_bloque(plan, i + 1), partir, avisos, opciones)
             del fallidos[i]
