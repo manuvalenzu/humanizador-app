@@ -66,7 +66,14 @@ EXCLUIDOS = ("whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed
              "-vl", "coder", "devstral", "magistral", "-tts", "omni", "edit",
              "rerank", "reward", "retriever", "parse", "clip", "safety", "vila", "kosmos", "deplot",
              "neva", "fuyu", "paligemma", "nemoretriever", "riva", "cosmos", "bge", "e5-", "arctic-embed")
-DEBILES = ("8b", "7b", "3b", "1b", "mini", "nano", "small", "tiny", "lite", "instant", "haiku", "ministral")
+# Modelos chicos: "8b", "-1.5b" (pero no "17b" ni "a3b", que son otra cosa)
+PATRON_CHICO = re.compile(r"(?<![a-z0-9.])[1-9](?:\.\d)?b\b")
+DEBILES = ("mini", "nano", "small", "tiny", "lite", "instant", "haiku", "ministral")
+# En catálogos grandes (NVIDIA, OpenRouter, Groq, Cerebras) solo se aceptan familias de modelos de texto
+FAMILIAS_TEXTO = ("llama", "mistral", "mixtral", "qwen", "deepseek", "gemma", "kimi", "glm", "nemotron",
+                  "phi-", "minimax", "gpt-oss", "command", "hermes", "granite", "olmo", "jamba", "seed")
+NO_TEXTO = ("pii", "gliner", "ner-", "classif", "detector", "translat", "nemoguard", "content-safety",
+            "topic-control", "jailbreak", "math", "embed", "vision", "-vl", "ocr", "speech")
 
 PREFERENCIAS = {
     "anthropic": ("sonnet", "opus", "haiku"),
@@ -83,7 +90,7 @@ PREFERENCIAS = {
 
 def _puntaje_modelo(pid, mid, creado):
     low = mid.lower()
-    debil = 1 if any(d in low for d in DEBILES) else 0
+    debil = 1 if (PATRON_CHICO.search(low) or any(d in low for d in DEBILES)) else 0
     prefs = PREFERENCIAS.get(pid, ())
     pref = next((i for i, p in enumerate(prefs) if p in low), len(prefs))
     gratis = 0 if (pid == "openrouter" and low.endswith(":free")) else 1
@@ -94,7 +101,7 @@ def _puntaje_modelo(pid, mid, creado):
 
 
 # Cambiar este número obliga a volver a detectar los modelos tras una actualización del código
-VERSION_MODELOS = "v11"
+VERSION_MODELOS = "v12"
 # Modelos ya detectados en el hilo principal (los bloques en paralelo los leen de aquí)
 MODELOS_RESUELTOS = {}
 
@@ -123,6 +130,9 @@ def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
             continue
         if pid == "openai" and not low.startswith("gpt-"):
             continue
+        if pid in ("nvidia", "openrouter", "groq", "cerebras"):
+            if not any(f in low for f in FAMILIAS_TEXTO) or any(x in low for x in NO_TEXTO):
+                continue
         creado = item.get("created") or 0
         if not creado and item.get("created_at"):
             # Claude entrega la fecha como texto: "2026-05-14T..." -> 20260514
@@ -162,7 +172,7 @@ def _post_con_ajustes(url, headers, payload, tipo, limite=90):
                 espera = float(resp.headers.get("retry-after", "0"))
             except (TypeError, ValueError):
                 espera = 0
-            if 0 < espera <= 8:
+            if 0 < espera <= 15:
                 time.sleep(espera + 0.5)
                 continue
         break
@@ -890,19 +900,30 @@ with st.sidebar:
             conectados, default=conectados, format_func=lambda pid: nombres[pid],
             help="Cada paso usa un modelo distinto de esta lista. Si uno falla, se prueba el siguiente.",
         )
-        lineas = []
+        detectados = {}
         for pid in conectados:
             try:
-                mods = detectar_modelos(pid, CLAVES[pid])
-                MODELOS_RESUELTOS[pid] = mods
-                lineas.append(f"{nombres[pid]}: {mods[0] if mods else 'sin modelos'}")
+                detectados[pid] = detectar_modelos(pid, CLAVES[pid])
             except Exception:
-                lineas.append(f"{nombres[pid]}: clave no válida o sin conexión")
-        st.markdown(
-            '<div class="motor"><p class="motor-label">Modelos conectados</p>'
-            + "".join(f'<p class="motor-valor">{html_lib.escape(l)}</p>' for l in lineas) + "</div>",
-            unsafe_allow_html=True,
-        )
+                detectados[pid] = None
+        with st.expander("Modelos conectados", expanded=False):
+            st.caption("La app elige sola el más rápido y capaz de cada cuenta. Puedes cambiarlo aquí.")
+            for pid in conectados:
+                mods = detectados[pid]
+                if mods is None:
+                    st.markdown(f"**{nombres[pid]}:** clave no válida o sin conexión")
+                    continue
+                if not mods:
+                    st.markdown(f"**{nombres[pid]}:** sin modelos de texto")
+                    continue
+                if len(mods) == 1:
+                    st.markdown(f"**{nombres[pid]}:** {mods[0]}")
+                    MODELOS_RESUELTOS[pid] = mods
+                    continue
+                opciones = mods[:30]
+                elegido = st.selectbox(nombres[pid], opciones, index=0, key=f"modelo_{pid}")
+                # El elegido va primero; los demás quedan de respaldo
+                MODELOS_RESUELTOS[pid] = [elegido] + [m for m in mods if m != elegido]
 
     mezclar_modelos = st.toggle(
         "Un modelo distinto en cada paso",
@@ -1130,7 +1151,7 @@ def explicar_error(e):
 
 
 PALABRAS_POR_BLOQUE = 320   # bloques cortos: los modelos resumen menos y responden más rápido
-BLOQUES_EN_PARALELO = 3
+BLOQUES_EN_PARALELO = 2   # 2 a la vez: rápido sin agotar la cuota por minuto de los planes gratis
 
 
 def es_titulo(parrafo):
@@ -1264,12 +1285,33 @@ def procesar(texto_original, estado):
             for n, i in enumerate(a_procesar)
         }
         pendientes = set(futuros)
+        fallidos = {}
         while pendientes:
             hechos, pendientes = wait(pendientes, timeout=1, return_when=FIRST_COMPLETED)
             for f in hechos:
-                resultados[futuros[f]] = f.result()   # si un bloque falla, el error se muestra
+                try:
+                    resultados[futuros[f]] = f.result()
+                except Exception as e_bloque:
+                    fallidos[futuros[f]] = e_bloque
             listos = total - len(pendientes)
             avanzar(f"Bloques listos: {listos} de {total}" if total > 1 else "Humanizando el texto")
+
+    # Un bloque que falló (por cuota, casi siempre) se reintenta solo, tras una pausa corta
+    for n, i in enumerate(sorted(fallidos)):
+        avanzar(f"Reintentando un bloque que se quedó sin cuota ({n + 1} de {len(fallidos)})")
+        time.sleep(10)
+        try:
+            resultados[i] = procesar_bloque(bloques[i][1], plan_para_bloque(plan, i + 1), partir, avisos, opciones)
+            del fallidos[i]
+        except Exception as e_bloque:
+            fallidos[i] = e_bloque
+    if fallidos and len(fallidos) == total:
+        raise next(iter(fallidos.values()))   # nada se pudo procesar: se muestra el error
+    for i, e_bloque in fallidos.items():
+        # Mejor un resultado parcial que perder todo el trabajo
+        resultados[i] = (bloques[i][1], "", {}, {}, 0)
+        avisos.append(f"Un bloque no se pudo humanizar ({str(e_bloque)[:120]}) y quedó con el texto original. "
+                      "Espera un minuto y vuelve a pasar solo ese párrafo.")
 
     # Arma el texto final en el orden original (los títulos quedan tal cual)
     partes, usados, tiempos, antes, modelo_final = [], {}, {}, 0, ""
