@@ -9,6 +9,7 @@ import time
 import json
 import re
 import hmac
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import html as html_lib
 import unicodedata
 
@@ -92,8 +93,14 @@ def _puntaje_modelo(pid, mid, creado):
     return (gratis, debil, razonador, gigante, pref, -(creado or 0))
 
 
+# Cambiar este número obliga a volver a detectar los modelos tras una actualización del código
+VERSION_MODELOS = "v11"
+# Modelos ya detectados en el hilo principal (los bloques en paralelo los leen de aquí)
+MODELOS_RESUELTOS = {}
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def detectar_modelos(pid, api_key):
+def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
     """Lista de modelos de chat de la cuenta, del mejor al peor."""
     fijos = leer_secreto(f"{pid.upper()}_MODEL")
     if fijos:
@@ -174,7 +181,7 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
         client = genai.Client(api_key=clave, http_options=types.HttpOptions(timeout=limite * 1000))
         return llamar_gemini(client, user_text, system_prompt), f"Gemini ({GEMINI_MODEL})"
 
-    modelos = detectar_modelos(pid, clave)
+    modelos = MODELOS_RESUELTOS.get(pid) or detectar_modelos(pid, clave)
     if not modelos:
         raise RuntimeError(f"{p['nombre']}: no se encontraron modelos de texto en la cuenta.")
 
@@ -404,7 +411,10 @@ PATRON_ENUMERACION = re.compile(
     r"\b[\wáéíóúñü]+(?: [\wáéíóúñü]+){0,2}, [\wáéíóúñü]+(?: [\wáéíóúñü]+){0,2},? (?:y|e) [\wáéíóúñü]+",
     re.IGNORECASE,
 )
-PATRON_GERUNDIO = re.compile(r", ([\wáéíóúñ]+(?:ando|iendo|yendo))\b", re.IGNORECASE)
+PATRON_GERUNDIO = re.compile(
+    r", (?!cuando\b|mando\b|comando\b|bando\b|blando\b|fernando\b|orlando\b)([\wáéíóúñ]+(?:ando|iendo|yendo))\b",
+    re.IGNORECASE,
+)
 
 
 def contar_palabras(texto):
@@ -471,7 +481,7 @@ def rango_parrafos(par_ref, partir):
     """Cuántos párrafos se aceptan. Con la capa de estructura, se permite dividir (4 -> 5 o 6)."""
     if not partir:
         return par_ref, par_ref
-    return par_ref, max(par_ref + 2, math.ceil(par_ref * 1.6))
+    return par_ref, max(par_ref + 1, math.ceil(par_ref * 1.5))
 
 
 def problemas_de_fidelidad(texto, referencia, partir=False):
@@ -884,6 +894,7 @@ with st.sidebar:
         for pid in conectados:
             try:
                 mods = detectar_modelos(pid, CLAVES[pid])
+                MODELOS_RESUELTOS[pid] = mods
                 lineas.append(f"{nombres[pid]}: {mods[0] if mods else 'sin modelos'}")
             except Exception:
                 lineas.append(f"{nombres[pid]}: clave no válida o sin conexión")
@@ -983,7 +994,7 @@ PROMPT_ESTRUCTURA = """
 Eres un editor que desarma la estructura de un ensayo escrito por IA, sin quitarle contenido.
 """ + REGLA_NO_RESUMIR + """
 QUÉ DEBES HACER:
-1. ROMPE LA ESTRUCTURA DE LOS PÁRRAFOS: si el original tiene 4 párrafos, el resultado tiene 5 o 6 párrafos más cortos. Divide los párrafos largos por donde cambia la idea. Que los párrafos no midan lo mismo: alguno de dos oraciones, otro de cinco.
+1. ROMPE LA ESTRUCTURA DE LOS PÁRRAFOS: divide solo los párrafos más largos, por donde cambia la idea (si el original tiene 4 párrafos, el resultado tiene 5 o 6). Nunca dejes una sola oración por párrafo en todo el texto: que los párrafos midan distinto, alguno de dos oraciones y otro de cinco.
 2. VARÍA EL LARGO DE LAS ORACIONES DE FORMA EXTREMA: mezcla oraciones de 4 a 7 palabras con otras de 30 a 40. Nunca tres oraciones seguidas de largo parecido.
 3. CAMBIA LA ARQUITECTURA DE CADA PÁRRAFO: no empieces cada párrafo con una oración que lo resume ni lo cierres con una que concluye. Abre con un hecho, una fecha, un nombre o una consecuencia, y deja la explicación para después.
 4. MUEVE LAS PIEZAS DENTRO DE CADA ORACIÓN: pon a veces la fecha o el lugar al inicio, a veces el sujeto al final, y otras usa una subordinada al comienzo.
@@ -1038,7 +1049,7 @@ def instrucciones_de_medida(original, partir=False):
     datos = extraer_datos_clave(original)
     par = len(dividir_parrafos(original))
     if partir:
-        objetivo = f"entre {par + 1} y {max(par + 1, math.ceil(par * 1.5))} párrafos más cortos"
+        objetivo = f"entre {par} y {max(par + 1, math.ceil(par * 1.5))} párrafos; divide solo los párrafos más largos"
     else:
         objetivo = f"exactamente {par} párrafo(s)"
     lineas = [
@@ -1118,67 +1129,85 @@ def explicar_error(e):
     return causa, t[:600]
 
 
-def procesar(texto_original, estado):
-    """Corre todo el flujo y devuelve (texto_final, modelo, avisos, auditoria, texto_base)."""
-    avisos = []
-    plan = armar_plan()
-    usados = {}
-    tiempos = {}
-    inicio_total = time.monotonic()
+PALABRAS_POR_BLOQUE = 320   # bloques cortos: los modelos resumen menos y responden más rápido
+BLOQUES_EN_PARALELO = 3
 
-    def avanzar(texto):
-        estado.update(label=f"{texto} ({round(time.monotonic() - inicio_total)} s)")
-    partir = usar_estructura
 
-    avanzar("Limpiando caracteres ocultos y formato")
-    texto_base, _ = clean_text(texto_original)
+def es_titulo(parrafo):
+    """Una línea corta sin punto final se trata como título y se deja tal cual."""
+    p = parrafo.strip()
+    return 0 < contar_palabras(p) <= 18 and p[-1:] not in ".!?;:" and "\n" not in p
+
+
+def dividir_en_bloques(texto):
+    """Agrupa párrafos en bloques de ~320 palabras. Devuelve [(es_titulo, texto)]."""
+    bloques, actual = [], []
+    for par in dividir_parrafos(texto):
+        if es_titulo(par):
+            if actual:
+                bloques.append((False, "\n\n".join(actual))); actual = []
+            bloques.append((True, par))
+            continue
+        if actual and contar_palabras("\n\n".join(actual + [par])) > PALABRAS_POR_BLOQUE:
+            bloques.append((False, "\n\n".join(actual))); actual = []
+        actual.append(par)
+    if actual:
+        bloques.append((False, "\n\n".join(actual)))
+    return bloques
+
+
+def plan_para_bloque(plan, indice):
+    """Cada bloque empieza los pasos intermedios con un proveedor distinto, para repartir la carga."""
+    nuevo = dict(plan)
+    for paso in ("ingles", "espanol", "estructura"):
+        lista = plan[paso]
+        rapidos = [p for p in lista if p not in ("nvidia", "openrouter")]
+        lentos = [p for p in lista if p in ("nvidia", "openrouter")]
+        if len(rapidos) > 1:
+            k = indice % len(rapidos)
+            rapidos = rapidos[k:] + rapidos[:k]
+        nuevo[paso] = rapidos + lentos
+    return nuevo
+
+
+def procesar_bloque(texto_base, plan, partir, avisos, opciones):
+    """Todo el flujo para un bloque. No toca la interfaz (corre en paralelo)."""
+    usados, tiempos = {}, {}
     medida_igual = instrucciones_de_medida(texto_base, partir=False)
     medida = instrucciones_de_medida(texto_base, partir=partir)
 
-    # CAPA B: retrotraducción o paráfrasis (conserva los párrafos del original)
-    if usar_retrotraduccion:
-        avanzar("Pasando el texto al inglés")
+    # CAPA B: retrotraducción o paráfrasis
+    if opciones["retro"]:
         texto_en, _ = generar(PROMPT_EN, texto_base, 0.6, "ingles", plan, avisos, usados, tiempos)
-        avanzar("Volviendo al español con otra estructura")
         borrador, _ = generar(PROMPT_ES, f"{medida_igual}\n\nTEXTO:\n{texto_en}", 0.85, "espanol", plan, avisos, usados, tiempos)
     else:
-        avanzar("Reordenando cláusulas y conectores")
         borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida_igual}\n\nTEXTO:\n{texto_base}", 0.85, "espanol", plan, avisos, usados, tiempos)
     borrador, _ = clean_text(borrador)
 
-
-    # CAPA DE DESTRUCCIÓN DE ESTRUCTURA: más párrafos, más cortos, oraciones de largo extremo
+    # CAPA DE ESTRUCTURA
     if partir:
-        avanzar("Rompiendo la estructura de párrafos y oraciones")
-        entrada_estructura = f"{medida}\n\nTEXTO A REESTRUCTURAR:\n{borrador}"
         try:
-            reestructurado, _ = generar(PROMPT_ESTRUCTURA, entrada_estructura, 0.85, "estructura", plan, avisos, usados, tiempos)
+            reestructurado, _ = generar(PROMPT_ESTRUCTURA, f"{medida}\n\nTEXTO A REESTRUCTURAR:\n{borrador}",
+                                        0.85, "estructura", plan, avisos, usados, tiempos)
             reestructurado, _ = clean_text(reestructurado)
-            # Solo se usa si no resumió
             if contar_palabras(reestructurado) >= 0.88 * contar_palabras(texto_base):
                 borrador = reestructurado
-            else:
-                avisos.append("La capa de estructura acortó el texto, así que se usó el borrador anterior.")
         except Exception as e_est:
-            avisos.append(f"No se pudo aplicar la capa de estructura ({e_est}).")
+            avisos.append(f"No se pudo aplicar la capa de estructura en un bloque ({e_est}).")
 
-    # REDACCIÓN FINAL (temperatura 0.85: menos frases hechas)
-    avanzar("Redactando la versión final")
+    # REDACCIÓN FINAL
     entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
     texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.85, "final", plan, avisos, usados, tiempos)
     texto_generado, _ = clean_text(texto_generado)
 
-    # CAPA C: revisión en código y corrección puntual
+    # CAPA C: revisión y corrección del bloque
     problemas_iniciales, _ = auditar_texto(texto_generado, texto_base, partir)
-    rondas = 2 if usar_auditoria else 1
-    for ronda in range(rondas):
+    for ronda in range(2 if opciones["auditoria"] else 1):
         problemas, _ = auditar_texto(texto_generado, texto_base, partir)
-        # Sin la revisión de estilo activada, igual se corrige si quedó resumido o perdió datos
-        if not usar_auditoria:
+        if not opciones["auditoria"]:
             problemas = problemas_de_fidelidad(texto_generado, texto_base, partir)
         if not problemas:
             break
-        avanzar(f"Corrigiendo {len(problemas)} punto(s) detectados en la revisión")
         lista = "\n".join(f"- {p}" for p in problemas)
         try:
             corregido, _ = generar(
@@ -1187,24 +1216,82 @@ def procesar(texto_original, estado):
                 0.7, "correccion", plan, avisos, usados, tiempos,
             )
         except Exception as e_corr:
-            avisos.append(f"No se pudo hacer la corrección automática ({e_corr}).")
+            avisos.append(f"No se pudo hacer la corrección automática de un bloque ({e_corr}).")
             break
         corregido, _ = clean_text(corregido)
         nuevos, _ = auditar_texto(corregido, texto_base, partir)
-        fidelidad_antes = len(problemas_de_fidelidad(texto_generado, texto_base, partir))
-        fidelidad_despues = len(problemas_de_fidelidad(corregido, texto_base, partir))
-        # Se acepta si mejora y no vuelve a acortar el texto
-        no_acorta = contar_palabras(corregido) >= 0.95 * contar_palabras(texto_generado) or fidelidad_despues < fidelidad_antes
-        if len(nuevos) < len(problemas) and fidelidad_despues <= fidelidad_antes and no_acorta:
+        fid_antes = len(problemas_de_fidelidad(texto_generado, texto_base, partir))
+        fid_despues = len(problemas_de_fidelidad(corregido, texto_base, partir))
+        no_acorta = contar_palabras(corregido) >= 0.95 * contar_palabras(texto_generado) or fid_despues < fid_antes
+        if len(nuevos) < len(problemas) and fid_despues <= fid_antes and no_acorta:
             texto_generado = corregido
         else:
             break
+    return texto_generado, modelo_final, usados, tiempos, len(problemas_iniciales)
 
-    texto_limpio, _ = clean_text(texto_generado)
+
+def procesar(texto_original, estado):
+    """Corre todo el flujo y devuelve (texto_final, modelo, avisos, auditoria, texto_base)."""
+    avisos = []
+    plan = armar_plan()
+    inicio_total = time.monotonic()
+
+    def avanzar(texto):
+        estado.update(label=f"{texto} ({round(time.monotonic() - inicio_total)} s)")
+
+    partir = usar_estructura
+    opciones = {"retro": usar_retrotraduccion, "auditoria": usar_auditoria}
+
+    avanzar("Limpiando caracteres ocultos y formato")
+    texto_base, _ = clean_text(texto_original)
+    bloques = dividir_en_bloques(texto_base)
+    a_procesar = [i for i, (titulo, _) in enumerate(bloques) if not titulo]
+    resultados = {}
+
+    # Asegura que la lista de modelos de cada proveedor esté lista antes de abrir los hilos
+    for pid in {p for pasos in plan.values() for p in pasos}:
+        if pid not in MODELOS_RESUELTOS and PROVEEDORES[pid]["tipo"] != "gemini":
+            try:
+                MODELOS_RESUELTOS[pid] = detectar_modelos(pid, CLAVES[pid])
+            except Exception:
+                pass
+
+    total = len(a_procesar)
+    avanzar(f"Humanizando {total} bloque(s) en paralelo" if total > 1 else "Humanizando el texto")
+    with ThreadPoolExecutor(max_workers=max(1, min(BLOQUES_EN_PARALELO, total))) as pool:
+        futuros = {
+            pool.submit(procesar_bloque, bloques[i][1], plan_para_bloque(plan, n), partir, avisos, opciones): i
+            for n, i in enumerate(a_procesar)
+        }
+        pendientes = set(futuros)
+        while pendientes:
+            hechos, pendientes = wait(pendientes, timeout=1, return_when=FIRST_COMPLETED)
+            for f in hechos:
+                resultados[futuros[f]] = f.result()   # si un bloque falla, el error se muestra
+            listos = total - len(pendientes)
+            avanzar(f"Bloques listos: {listos} de {total}" if total > 1 else "Humanizando el texto")
+
+    # Arma el texto final en el orden original (los títulos quedan tal cual)
+    partes, usados, tiempos, antes, modelo_final = [], {}, {}, 0, ""
+    for i, (titulo, texto) in enumerate(bloques):
+        if titulo:
+            partes.append(texto)
+            continue
+        texto_bloque, modelo_bloque, usados_b, tiempos_b, antes_b = resultados[i]
+        partes.append(texto_bloque)
+        modelo_final = modelo_final or modelo_bloque
+        antes += antes_b
+        for k, v in usados_b.items():
+            usados.setdefault(k, v)
+        for k, v in tiempos_b.items():
+            tiempos[k] = max(tiempos.get(k, 0), v)   # en paralelo cuenta el bloque más lento
+
+    texto_limpio, _ = clean_text("\n\n".join(partes))
     problemas_finales, metricas = auditar_texto(texto_limpio, texto_base, partir)
     metricas["palabras_original"] = contar_palabras(texto_base)
     metricas["palabras_resultado"] = contar_palabras(texto_limpio)
-    auditoria = {"antes": len(problemas_iniciales), "despues": problemas_finales, "metricas": metricas, "modelos": usados,
+    metricas["bloques"] = total
+    auditoria = {"antes": antes, "despues": problemas_finales, "metricas": metricas, "modelos": usados,
                  "tiempos": {k: round(v, 1) for k, v in tiempos.items()},
                  "tiempo_total": round(time.monotonic() - inicio_total, 1)}
     return texto_limpio, modelo_final, avisos, auditoria, texto_base
@@ -1387,7 +1474,9 @@ if st.session_state["texto_humanizado"] and aud:
             f"{etiquetas[k]}: {html_lib.escape(v)} ({formato_tiempo(tiempos_aud.get(k, 0))})"
             for k, v in usados.items() if k in etiquetas
         )
-        extension += f'<p class="ritmo-intro">Modelos y tiempos: {modelos_txt}. Total: {formato_tiempo(aud.get("tiempo_total", 0))}.</p>'
+        n_bloques = (aud.get("metricas") or {}).get("bloques", 1)
+        en_bloques = f" Se procesó en {n_bloques} bloques en paralelo; cada tiempo es el del bloque más lento." if n_bloques > 1 else ""
+        extension += f'<p class="ritmo-intro">Modelos y tiempos: {modelos_txt}. Total: {formato_tiempo(aud.get("tiempo_total", 0))}.{en_bloques}</p>'
     filas = (fila_ritmo("Original", fuente, "barra-orig") if fuente else "") + \
         fila_ritmo("Humanizado", st.session_state["texto_humanizado"], "barra-hum")
     st.markdown(
