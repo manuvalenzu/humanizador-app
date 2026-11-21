@@ -52,11 +52,16 @@ PROVEEDORES = {
 # Orden por defecto para elegir el modelo de la redacción final (mejor español primero)
 ORDEN_CALIDAD = ["anthropic", "openai", "deepseek", "nvidia", "mistral", "gemini", "groq", "cerebras", "openrouter"]
 
+# Orden por velocidad: los pasos intermedios usan primero los más rápidos
+ORDEN_VELOCIDAD = ["groq", "cerebras", "gemini", "openai", "anthropic", "deepseek", "mistral", "nvidia", "openrouter"]
+# Tiempo máximo por llamada (segundos). Si un modelo no responde, se pasa al siguiente.
+TIEMPO_MAXIMO = {"intermedio": 45, "final": 90}
+
 CLAVES = {pid: leer_secreto(p["clave"]) for pid, p in PROVEEDORES.items()}
 
 EXCLUIDOS = ("whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision", "audio",
              "compound", "allam", "realtime", "image", "transcribe", "search", "moderation", "ocr",
-             "dall", "davinci", "babbage", "instruct", "voxtral", "codestral", "computer-use", "sora",
+             "dall", "davinci", "babbage", "turbo-instruct", "voxtral", "codestral", "computer-use", "sora",
              "-vl", "coder", "devstral", "magistral", "-tts", "omni", "edit",
              "rerank", "reward", "retriever", "parse", "clip", "safety", "vila", "kosmos", "deplot",
              "neva", "fuyu", "paligemma", "nemoretriever", "riva", "cosmos", "bge", "e5-", "arctic-embed")
@@ -67,9 +72,9 @@ PREFERENCIAS = {
     "openai": ("gpt-5", "gpt-4.1", "gpt-4o", "gpt"),
     "deepseek": ("deepseek-chat", "deepseek-v", "deepseek"),
     "mistral": ("mistral-large-latest", "mistral-medium-latest", "mistral-large", "mistral-medium", "mistral-small-latest"),
-    "nvidia": ("deepseek-v3", "qwen3-235b", "llama-3.3-70b", "llama-3.1-405b", "llama-4-maverick",
-               "kimi-k2", "mistral-large", "nemotron-ultra", "deepseek", "qwen3", "llama"),
-    "groq": ("llama-3.3-70b", "gpt-oss-120b", "kimi", "llama-4-maverick", "qwen", "llama-4", "deepseek", "gpt-oss", "llama"),
+    "nvidia": ("deepseek-v3", "llama-3.3-70b", "llama-4-maverick", "qwen3-next", "mistral-medium",
+               "kimi-k2", "qwen3", "mistral-large", "deepseek", "llama"),
+    "groq": ("llama-3.3-70b", "llama-4-maverick", "kimi", "qwen", "llama-4", "gpt-oss-120b", "deepseek", "gpt-oss", "llama"),
     "cerebras": ("gpt-oss-120b", "qwen-3-235b", "llama-3.3-70b", "qwen", "llama"),
     "openrouter": ("deepseek", "llama-3.3-70b", "qwen3", "mistral", "gemma", "llama"),
 }
@@ -81,8 +86,10 @@ def _puntaje_modelo(pid, mid, creado):
     prefs = PREFERENCIAS.get(pid, ())
     pref = next((i for i, p in enumerate(prefs) if p in low), len(prefs))
     gratis = 0 if (pid == "openrouter" and low.endswith(":free")) else 1
-    razonador = 1 if (pid == "nvidia" and any(r in low for r in ("-r1", "reasoning", "thinking"))) else 0
-    return (gratis, debil, razonador, pref, -(creado or 0))
+    # Los modelos que "razonan" antes de responder o que son gigantes tardan mucho más
+    razonador = 1 if any(r in low for r in ("-r1", "reasoning", "thinking", "gpt-oss", "qwq")) and pid not in ("openai", "anthropic") else 0
+    gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b", "ultra")) else 0
+    return (gratis, debil, razonador, gigante, pref, -(creado or 0))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -121,11 +128,11 @@ def detectar_modelos(pid, api_key):
     return [c[0] for c in candidatos]
 
 
-def _post_con_ajustes(url, headers, payload, tipo):
+def _post_con_ajustes(url, headers, payload, tipo, limite=90):
     """POST que se adapta a lo que cada modelo acepta (temperatura, tokens, penalizaciones)."""
     ultimo = None
     for intento in range(5):
-        resp = requests.post(url, headers=headers, json=payload, timeout=120)
+        resp = requests.post(url, headers=headers, json=payload, timeout=(10, limite))
         ultimo = resp
         if resp.status_code == 200:
             return resp
@@ -136,6 +143,8 @@ def _post_con_ajustes(url, headers, payload, tipo):
                 payload.pop("frequency_penalty", None); payload.pop("presence_penalty", None); cambiado = True
             if ("temperature" in texto or "top_p" in texto) and ("temperature" in payload or "top_p" in payload):
                 payload.pop("temperature", None); payload.pop("top_p", None); cambiado = True
+            if "reasoning" in texto and "reasoning_effort" in payload:
+                payload.pop("reasoning_effort", None); cambiado = True
             if "max_tokens" in texto and "max_tokens" in payload and tipo == "openai":
                 # Modelos nuevos de OpenAI usan max_completion_tokens (incluye el razonamiento)
                 payload["max_completion_tokens"] = payload.pop("max_tokens") * 3; cambiado = True
@@ -146,14 +155,14 @@ def _post_con_ajustes(url, headers, payload, tipo):
                 espera = float(resp.headers.get("retry-after", "0"))
             except (TypeError, ValueError):
                 espera = 0
-            if 0 < espera <= 25:
+            if 0 < espera <= 8:
                 time.sleep(espera + 0.5)
                 continue
         break
     return ultimo
 
 
-def llamar_proveedor(pid, system_prompt, user_text, temperature):
+def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
     """Llama a un proveedor probando sus mejores modelos. Devuelve (texto, 'Proveedor (modelo)')."""
     p = PROVEEDORES[pid]
     clave = CLAVES.get(pid)
@@ -162,7 +171,7 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature):
     max_salida = max(1500, min(8000, len(user_text) // 3 + 800))
 
     if p["tipo"] == "gemini":
-        client = genai.Client(api_key=clave)
+        client = genai.Client(api_key=clave, http_options=types.HttpOptions(timeout=limite * 1000))
         return llamar_gemini(client, user_text, system_prompt), f"Gemini ({GEMINI_MODEL})"
 
     modelos = detectar_modelos(pid, clave)
@@ -170,7 +179,7 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature):
         raise RuntimeError(f"{p['nombre']}: no se encontraron modelos de texto en la cuenta.")
 
     ultimo_error = ""
-    for modelo in modelos[:3]:
+    for modelo in modelos[:2]:
         try:
             if p["tipo"] == "anthropic":
                 headers = {"x-api-key": clave, "anthropic-version": "2023-06-01", "content-type": "application/json"}
@@ -179,7 +188,7 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature):
                     "messages": [{"role": "user", "content": user_text}],
                     "temperature": min(1.0, temperature),
                 }
-                resp = _post_con_ajustes(f"{p['base']}/messages", headers, payload, "anthropic")
+                resp = _post_con_ajustes(f"{p['base']}/messages", headers, payload, "anthropic", limite)
                 if resp.status_code == 200:
                     bloques = resp.json().get("content", [])
                     contenido = "".join(b.get("text", "") for b in bloques if b.get("type") == "text")
@@ -198,13 +207,19 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature):
                 if pid in ("groq", "openrouter", "deepseek", "openai"):
                     payload["frequency_penalty"] = 0.25
                     payload["presence_penalty"] = 0.2
-                resp = _post_con_ajustes(f"{p['base']}/chat/completions", headers, payload, "openai")
+                # Si toca un modelo que razona (gpt-oss), que piense poco: responde mucho más rápido
+                if "gpt-oss" in modelo.lower():
+                    payload["reasoning_effort"] = "low"
+                resp = _post_con_ajustes(f"{p['base']}/chat/completions", headers, payload, "openai", limite)
                 contenido = ""
                 if resp.status_code == 200:
                     try:
                         contenido = resp.json()["choices"][0]["message"].get("content") or ""
                     except (ValueError, KeyError, IndexError):
                         contenido = ""
+        except requests.Timeout:
+            # Si un modelo no respondió a tiempo, se pasa directo al siguiente proveedor
+            raise RuntimeError(f"{p['nombre']} ({modelo}) tardó más de {limite} s en responder.")
         except requests.RequestException as e:
             ultimo_error = f"{p['nombre']} ({modelo}) sin respuesta: {e}"
             continue
@@ -230,7 +245,14 @@ def quitar_razonamiento(texto):
 # ==========================================
 def llamar_gemini(client, contents, system_instruction):
     # Gemini 3.6 Flash ya no usa temperature / top_p / top_k (Google pide quitarlos)
-    config = types.GenerateContentConfig(system_instruction=system_instruction)
+    # Pensamiento bajo: la reescritura no necesita razonar largo y así responde más rápido
+    try:
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            thinking_config=types.ThinkingConfig(thinking_level="low"),
+        )
+    except Exception:
+        config = types.GenerateContentConfig(system_instruction=system_instruction)
     ultimo_error = None
     for intento in range(2):
         try:
@@ -241,7 +263,11 @@ def llamar_gemini(client, contents, system_instruction):
             ultimo_error = RuntimeError("Gemini devolvió una respuesta vacía (posible bloqueo de contenido).")
         except Exception as e:
             ultimo_error = e
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            # Si el modelo no acepta el nivel de pensamiento, se reintenta sin él
+            if "thinking" in str(e).lower() and getattr(config, "thinking_config", None):
+                config = types.GenerateContentConfig(system_instruction=system_instruction)
+                continue
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "timeout" in str(e).lower():
                 break
         if intento == 0:
             time.sleep(2)
@@ -741,7 +767,7 @@ def html_hoja(texto):
         return (
             '<div class="hoja vacia" role="region" aria-label="Texto humanizado">'
             '<p class="vacia-titulo">Aquí aparece tu texto reescrito.</p>'
-            '<p class="vacia-texto">Pega un texto a la izquierda y pulsa Refinar texto. '
+            '<p class="vacia-texto">Pega un texto a la izquierda y pulsa Humanizar texto. '
             'El resultado queda en esta hoja, listo para copiar.</p></div>'
         )
     parrafos = dividir_parrafos(texto)
@@ -1032,33 +1058,45 @@ def armar_plan():
     final = modelo_final_id
     disponibles = [pid for pid in ORDEN_CALIDAD if CLAVES.get(pid)]
     mezcla = [pid for pid in proveedores_mezcla if CLAVES.get(pid)] or disponibles
-    otros = [pid for pid in mezcla if pid != final] or [final]
-    pasos_mezcla = ["ingles", "espanol", "estructura"]
+    # Pasos intermedios: primero los proveedores rápidos; OpenRouter gratis y NVIDIA quedan de respaldo
+    rapidos = [pid for pid in ORDEN_VELOCIDAD if pid in mezcla and pid not in ("openrouter", "nvidia") and pid != final]
+    otros = rapidos or [pid for pid in ORDEN_VELOCIDAD if pid in mezcla and pid != final] or [final]
+    respaldo = [pid for pid in ORDEN_VELOCIDAD if pid in disponibles]
     plan = {}
-    for i, paso in enumerate(pasos_mezcla):
+    for i, paso in enumerate(["ingles", "espanol", "estructura"]):
         principal = otros[i % len(otros)] if mezclar_modelos else final
-        plan[paso] = [principal] + [p for p in mezcla if p != principal] + [p for p in disponibles if p not in mezcla and p != principal]
+        plan[paso] = [principal] + [p for p in respaldo if p != principal]
     for paso in ("final", "correccion"):
-        plan[paso] = [final] + [p for p in disponibles if p != final]
+        plan[paso] = [final] + [p for p in respaldo if p != final]
     return plan
 
 
-def generar(system_prompt, texto, temperature, paso, plan, avisos, usados):
+def generar(system_prompt, texto, temperature, paso, plan, avisos, usados, tiempos):
     """Prueba los proveedores del paso en orden. Devuelve (texto, 'Proveedor (modelo)')."""
     errores = []
-    for pid in plan[paso]:
-        try:
-            resultado = llamar_proveedor(pid, system_prompt, texto, temperature)
-        except Exception as e:
-            errores.append(str(e))
-            continue
-        if errores:
-            aviso = f"{errores[0][:160]} Se usó otro modelo como respaldo."
-            if aviso not in avisos:
-                avisos.append(aviso)
-        usados[paso] = resultado[1]
-        return resultado
-    raise RuntimeError(" | ".join(errores) or "No hay ningún proveedor configurado.")
+    limite = TIEMPO_MAXIMO["final"] if paso in ("final", "correccion") else TIEMPO_MAXIMO["intermedio"]
+    inicio = time.monotonic()
+    try:
+        for pid in plan[paso]:
+            try:
+                resultado = llamar_proveedor(pid, system_prompt, texto, temperature, limite)
+            except Exception as e:
+                errores.append(str(e))
+                continue
+            if errores:
+                aviso = f"{errores[0][:160]} Se usó otro modelo como respaldo."
+                if aviso not in avisos:
+                    avisos.append(aviso)
+            usados[paso] = resultado[1]
+            return resultado
+        raise RuntimeError(" | ".join(errores) or "No hay ningún proveedor configurado.")
+    finally:
+        tiempos[paso] = tiempos.get(paso, 0) + (time.monotonic() - inicio)
+
+
+def formato_tiempo(segundos):
+    segundos = int(round(segundos or 0))
+    return f"{segundos // 60} min {segundos % 60} s" if segundos >= 60 else f"{segundos} s"
 
 
 def explicar_error(e):
@@ -1085,31 +1123,36 @@ def procesar(texto_original, estado):
     avisos = []
     plan = armar_plan()
     usados = {}
+    tiempos = {}
+    inicio_total = time.monotonic()
+
+    def avanzar(texto):
+        estado.update(label=f"{texto} ({round(time.monotonic() - inicio_total)} s)")
     partir = usar_estructura
 
-    estado.update(label="Limpiando caracteres ocultos y formato")
+    avanzar("Limpiando caracteres ocultos y formato")
     texto_base, _ = clean_text(texto_original)
     medida_igual = instrucciones_de_medida(texto_base, partir=False)
     medida = instrucciones_de_medida(texto_base, partir=partir)
 
     # CAPA B: retrotraducción o paráfrasis (conserva los párrafos del original)
     if usar_retrotraduccion:
-        estado.update(label="Pasando el texto al inglés")
-        texto_en, _ = generar(PROMPT_EN, texto_base, 0.6, "ingles", plan, avisos, usados)
-        estado.update(label="Volviendo al español con otra estructura")
-        borrador, _ = generar(PROMPT_ES, f"{medida_igual}\n\nTEXTO:\n{texto_en}", 0.85, "espanol", plan, avisos, usados)
+        avanzar("Pasando el texto al inglés")
+        texto_en, _ = generar(PROMPT_EN, texto_base, 0.6, "ingles", plan, avisos, usados, tiempos)
+        avanzar("Volviendo al español con otra estructura")
+        borrador, _ = generar(PROMPT_ES, f"{medida_igual}\n\nTEXTO:\n{texto_en}", 0.85, "espanol", plan, avisos, usados, tiempos)
     else:
-        estado.update(label="Reordenando cláusulas y conectores")
-        borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida_igual}\n\nTEXTO:\n{texto_base}", 0.85, "espanol", plan, avisos, usados)
+        avanzar("Reordenando cláusulas y conectores")
+        borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida_igual}\n\nTEXTO:\n{texto_base}", 0.85, "espanol", plan, avisos, usados, tiempos)
     borrador, _ = clean_text(borrador)
 
 
     # CAPA DE DESTRUCCIÓN DE ESTRUCTURA: más párrafos, más cortos, oraciones de largo extremo
     if partir:
-        estado.update(label="Rompiendo la estructura de párrafos y oraciones")
+        avanzar("Rompiendo la estructura de párrafos y oraciones")
         entrada_estructura = f"{medida}\n\nTEXTO A REESTRUCTURAR:\n{borrador}"
         try:
-            reestructurado, _ = generar(PROMPT_ESTRUCTURA, entrada_estructura, 0.85, "estructura", plan, avisos, usados)
+            reestructurado, _ = generar(PROMPT_ESTRUCTURA, entrada_estructura, 0.85, "estructura", plan, avisos, usados, tiempos)
             reestructurado, _ = clean_text(reestructurado)
             # Solo se usa si no resumió
             if contar_palabras(reestructurado) >= 0.88 * contar_palabras(texto_base):
@@ -1120,14 +1163,14 @@ def procesar(texto_original, estado):
             avisos.append(f"No se pudo aplicar la capa de estructura ({e_est}).")
 
     # REDACCIÓN FINAL (temperatura 0.85: menos frases hechas)
-    estado.update(label="Redactando la versión final")
+    avanzar("Redactando la versión final")
     entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
-    texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.85, "final", plan, avisos, usados)
+    texto_generado, modelo_final = generar(PROMPT_FINAL, entrada_final, 0.85, "final", plan, avisos, usados, tiempos)
     texto_generado, _ = clean_text(texto_generado)
 
     # CAPA C: revisión en código y corrección puntual
     problemas_iniciales, _ = auditar_texto(texto_generado, texto_base, partir)
-    rondas = 3 if usar_auditoria else 1
+    rondas = 2 if usar_auditoria else 1
     for ronda in range(rondas):
         problemas, _ = auditar_texto(texto_generado, texto_base, partir)
         # Sin la revisión de estilo activada, igual se corrige si quedó resumido o perdió datos
@@ -1135,13 +1178,13 @@ def procesar(texto_original, estado):
             problemas = problemas_de_fidelidad(texto_generado, texto_base, partir)
         if not problemas:
             break
-        estado.update(label=f"Corrigiendo {len(problemas)} punto(s) detectados en la revisión")
+        avanzar(f"Corrigiendo {len(problemas)} punto(s) detectados en la revisión")
         lista = "\n".join(f"- {p}" for p in problemas)
         try:
             corregido, _ = generar(
                 PROMPT_CORRECCION,
                 f"{medida}\n\nPROBLEMAS DETECTADOS:\n{lista}\n\nORIGINAL:\n{texto_base}\n\nTEXTO:\n{texto_generado}",
-                0.7, "correccion", plan, avisos, usados,
+                0.7, "correccion", plan, avisos, usados, tiempos,
             )
         except Exception as e_corr:
             avisos.append(f"No se pudo hacer la corrección automática ({e_corr}).")
@@ -1161,7 +1204,9 @@ def procesar(texto_original, estado):
     problemas_finales, metricas = auditar_texto(texto_limpio, texto_base, partir)
     metricas["palabras_original"] = contar_palabras(texto_base)
     metricas["palabras_resultado"] = contar_palabras(texto_limpio)
-    auditoria = {"antes": len(problemas_iniciales), "despues": problemas_finales, "metricas": metricas, "modelos": usados}
+    auditoria = {"antes": len(problemas_iniciales), "despues": problemas_finales, "metricas": metricas, "modelos": usados,
+                 "tiempos": {k: round(v, 1) for k, v in tiempos.items()},
+                 "tiempo_total": round(time.monotonic() - inicio_total, 1)}
     return texto_limpio, modelo_final, avisos, auditoria, texto_base
 
 
@@ -1181,7 +1226,7 @@ with col1:
     )
     col_btn1, col_btn2 = st.columns([3, 1], gap="small")
     with col_btn1:
-        refinar = st.button("Refinar texto", width="stretch", type="primary")
+        refinar = st.button("Humanizar texto", width="stretch", type="primary")
     with col_btn2:
         st.button("Limpiar", on_click=limpiar_textos, width="stretch")
 
@@ -1192,19 +1237,46 @@ with col1:
             st.error("Falta configurar al menos una API key en los Secretos de Streamlit.")
         else:
             error_proceso = None
+            # Reloj en vivo: corre en el navegador mientras la app trabaja
+            reloj = st.empty()
+            with reloj.container():
+                html_reloj = """
+                <style>
+                :root { --ink-soft: #A6ACB6; --ink: #ECEEF1;
+                        --font-ui: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+                html, body { margin: 0; background-color: transparent; overflow: clip; }
+                p { margin: 6px 0 0 0; font-family: var(--font-ui); font-size: 15px; color: var(--ink-soft);
+                    font-variant-numeric: tabular-nums; }
+                b { color: var(--ink); font-weight: 600; }
+                </style>
+                <p>Tiempo transcurrido: <b id="t">0:00</b></p>
+                <script>
+                const t0 = Date.now(); const el = document.getElementById('t');
+                setInterval(function () {
+                    const s = Math.floor((Date.now() - t0) / 1000);
+                    el.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+                }, 250);
+                </script>
+                """
+                if hasattr(st, "iframe"):
+                    st.iframe(html_reloj, height=34)
+                else:
+                    components.html(html_reloj, height=34)
             with st.status("Preparando", expanded=False) as estado:
                 try:
                     texto_limpio, modelo_final, avisos, auditoria, texto_base = procesar(texto_original, estado)
                 except Exception as e:
                     error_proceso = e
+                    reloj.empty()
                     estado.update(label="No se pudo terminar", state="error")
                 else:
-                    estado.update(label="Listo", state="complete")
+                    reloj.empty()
+                    estado.update(label=f"Listo en {formato_tiempo(auditoria['tiempo_total'])}", state="complete")
                     st.session_state["texto_humanizado"] = texto_limpio
                     st.session_state["texto_fuente"] = texto_base
                     st.session_state["avisos"] = avisos
                     st.session_state["auditoria"] = auditoria
-                    st.toast(f"Listo. Procesado con {modelo_final}.")
+                    st.toast(f"Listo en {formato_tiempo(auditoria['tiempo_total'])}. Redacción final: {modelo_final}.")
                     st.rerun()
             if error_proceso is not None:
                 causa, detalle = explicar_error(error_proceso)
@@ -1214,7 +1286,13 @@ with col1:
 
 with col2:
     resultado = st.session_state["texto_humanizado"]
-    meta = f"{contar_palabras(resultado)} palabras" if resultado else "Sin resultado todavía"
+    aud_meta = st.session_state.get("auditoria") or {}
+    if resultado and aud_meta.get("tiempo_total") is not None:
+        meta = f"{contar_palabras(resultado)} palabras, listo en {formato_tiempo(aud_meta['tiempo_total'])}"
+    elif resultado:
+        meta = f"{contar_palabras(resultado)} palabras"
+    else:
+        meta = "Sin resultado todavía"
     st.markdown(
         f'<div class="panel-head"><span class="panel-title">Texto humanizado</span>'
         f'<span class="panel-meta">{meta}</span></div>',
@@ -1304,8 +1382,12 @@ if st.session_state["texto_humanizado"] and aud:
     etiquetas = {"ingles": "al inglés", "espanol": "vuelta al español", "estructura": "estructura",
                  "final": "redacción final", "correccion": "corrección"}
     if usados:
-        modelos_txt = "; ".join(f"{etiquetas[k]}: {html_lib.escape(v)}" for k, v in usados.items() if k in etiquetas)
-        extension += f'<p class="ritmo-intro">Modelos usados. {modelos_txt}.</p>'
+        tiempos_aud = aud.get("tiempos") or {}
+        modelos_txt = "; ".join(
+            f"{etiquetas[k]}: {html_lib.escape(v)} ({formato_tiempo(tiempos_aud.get(k, 0))})"
+            for k, v in usados.items() if k in etiquetas
+        )
+        extension += f'<p class="ritmo-intro">Modelos y tiempos: {modelos_txt}. Total: {formato_tiempo(aud.get("tiempo_total", 0))}.</p>'
     filas = (fila_ritmo("Original", fuente, "barra-orig") if fuente else "") + \
         fila_ritmo("Humanizado", st.session_state["texto_humanizado"], "barra-hum")
     st.markdown(
