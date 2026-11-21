@@ -82,8 +82,7 @@ CLAVES = {pid: leer_secreto(p["clave"]) for pid, p in PROVEEDORES.items()}
 GPTZERO_API_KEY = leer_secreto("GPTZERO_API_KEY")
 COPYLEAKS_EMAIL = leer_secreto("COPYLEAKS_EMAIL")
 COPYLEAKS_API_KEY = leer_secreto("COPYLEAKS_API_KEY")
-RONDAS_DETECTOR = 4        # reescrituras como máximo tras medir (cada medición gasta créditos del detector)
-CANDIDATOS_POR_PARRAFO = 2 # versiones que se piden de cada párrafo marcado (modo profundo); se elige la mejor
+RONDAS_DETECTOR = 3        # reescrituras como máximo tras medir (cada medición gasta créditos del detector)
 OBJETIVO_IA = 0.5          # se da por logrado cuando el peor detector marca menos de 0,5% (se muestra 0%)
 PARRAFOS_POR_RONDA = 8     # tope de párrafos que se reescriben en cada ronda
 
@@ -419,8 +418,8 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
     r = re.sub(r"[ \t]{2,}", " ", r)
     r = re.sub(r"^ +", "", r, flags=re.MULTILINE)
     r = re.sub(r"\*\*(.+?)\*\*", r"\1", r)                       # negritas markdown
-    r = re.sub(r"^[ \t]*(?:[-*•]|\d{1,2}[.)])[ \t]+", "", r, flags=re.MULTILINE)  # viñetas (no toca años)
-    r = re.sub(r"^#+[ \t]*", "", r, flags=re.MULTILINE)             # títulos markdown
+    r = re.sub(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+", "", r, flags=re.MULTILINE)  # viñetas (no toca años)
+    r = re.sub(r"^#+\s*", "", r, flags=re.MULTILINE)             # títulos markdown
     # y -> e ante sonido "i" (incluye mayúsculas), pero no ante diptongo: "agua y hielo"
     r = re.sub(r"\by (?=(?:[iíIÍ]|h[iíIÍ])(?![aeouáéóAEOU]))", "e ", r)
     r = re.sub(r"\bY (?=(?:[iíIÍ]|h[iíIÍ])(?![aeouáéóAEOU]))", "E ", r)
@@ -647,14 +646,6 @@ def auditar_texto(texto, referencia=None, partir=False):
             planos += 1
             if planos == 2:
                 break
-
-    if partir:
-        tam = [contar_palabras(p) for p in dividir_parrafos(texto) if not es_titulo(p)]
-        if len(tam) >= 4 and statistics.pstdev(tam) / statistics.mean(tam) < 0.15:
-            problemas.append(
-                f"Todos los párrafos miden casi lo mismo (unas {statistics.mean(tam):.0f} palabras). "
-                "Deja alguno claramente más corto (dos oraciones) y otro más largo, sin quitar contenido."
-            )
 
     if len(oraciones) >= 4:
         con_conector = [o for o in oraciones if _normalizar(o).lstrip('"¿¡(').startswith(
@@ -1165,6 +1156,11 @@ with st.sidebar:
         help="Apagado: una sola pasada por bloque, mucho más rápido. "
              "Encendido: retrotraducción, capa de estructura y dos rondas de corrección (4 a 6 llamadas por bloque).",
     )
+    pasadas = st.slider(
+        "Pasadas de humanización", 1, 3, 2,
+        help="Con 2, el resultado de la primera pasada vuelve a entrar al humanizador, igual que copiarlo y "
+             "pegarlo de nuevo. Cada pasada extra suma más o menos el mismo tiempo que la primera.",
+    )
     mezclar_modelos = st.toggle(
         "Un modelo distinto en cada paso",
         value=True,
@@ -1194,13 +1190,8 @@ with st.sidebar:
         value=bool(det_activos),
         disabled=not det_activos,
         help="Capa D: mide el resultado en los detectores conectados y reescribe solo las oraciones que marcan, "
-             "y repite hasta llegar a 0% o agotar las rondas. Cada medición gasta créditos de tu cuenta del detector. "
-             "QuillBot y Grammarly no tienen API: para esos usa el ajuste manual que aparece bajo el resultado.",
-    )
-    rondas_detector = st.slider(
-        "Rondas de ajuste con detectores", 1, 6, RONDAS_DETECTOR,
-        disabled=not (det_activos and usar_detectores),
-        help="Más rondas acercan el resultado a 0%, pero tardan más y gastan más créditos del detector.",
+             f"hasta {RONDAS_DETECTOR} rondas. Cada medición gasta créditos de tu cuenta del detector. "
+             "QuillBot y Grammarly no tienen API: esos dos se revisan a mano.",
     )
     if det_activos:
         st.caption("Detectores conectados: " + " y ".join(det_activos) + ".")
@@ -1294,7 +1285,7 @@ Devuelve ÚNICAMENTE el texto reestructurado, con los párrafos separados por un
 """
 
 PROMPT_FINAL = """
-Eres un redactor que domina el tema del texto y escribe para una revista de divulgación seria: lenguaje directo y claro, cercano al que usa un buen profesor cuando explica en clase, sin perder la formalidad académica. Reescribe el borrador conservando todo su contenido, pero eliminando por completo la cadencia de IA y la estructura de "ensayo clásico".
+Eres un historiador que escribe para una revista de divulgación seria: lenguaje directo y claro, cercano al que usa un buen profesor cuando explica en clase, sin perder la formalidad académica. Reescribe el borrador conservando todo su contenido, pero eliminando por completo la cadencia de IA y la estructura de "ensayo clásico".
 """ + REGLA_NO_RESUMIR + """
 ESTRUCTURA DE PÁRRAFOS: mantén la división en párrafos del borrador (no vuelvas a juntarlos).
 
@@ -1361,26 +1352,6 @@ QUÉ DEBES HACER:
 
 Formato: un solo párrafo de prosa, sin rayas largas, sin negritas, sin listas y sin comillas curvas.
 Devuelve ÚNICAMENTE el párrafo reescrito.
-"""
-
-
-PROMPT_APUNTES = (
-    "Convierte este párrafo en apuntes sueltos: una línea por cada hecho o idea, en el mismo orden, "
-    "con frases incompletas tipo telegrama (sin conectores ni redacción). "
-    "Conserva TAL CUAL todas las fechas, cifras, nombres, instituciones y citas. No omitas ni agregues nada. "
-    "Devuelve SOLO los apuntes."
-)
-PROMPT_DESDE_APUNTES = """
-Escribe UN párrafo en español a partir de estos APUNTES, como lo redacta de corrido una persona que conoce el tema. No tienes un texto previo que imitar: decide tú el orden interno y cómo se unen las ideas.
-
-1. Usa todos los apuntes y conserva TAL CUAL las fechas, cifras, nombres, instituciones y citas. No agregues información ni opiniones.
-2. Largo de las oraciones muy desigual: alguna de menos de 9 palabras, alguna de más de 25, nunca dos seguidas parecidas.
-3. Palabra concreta y cotidiana, sujeto y verbo claros, sin pasiva con "se" ni nominalizaciones.
-4. Sin conectores de manual al inicio ("Además", "Sin embargo", "Por lo tanto", "Asimismo"), sin coma + gerundio al final, sin enumeraciones de tres elementos y sin frases de importancia ("es fundamental", "cabe destacar", "juega un papel").
-5. Respeta el largo que se indica.
-
-Formato: un solo párrafo de prosa, sin rayas largas, sin negritas, sin listas y sin comillas curvas.
-Devuelve ÚNICAMENTE el párrafo.
 """
 
 
@@ -1620,94 +1591,33 @@ def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, parti
     return texto_generado, modelo_final, usados, tiempos, len(problemas_iniciales)
 
 
-def puntaje_local(texto):
-    """Menor es mejor: problemas que ve la revisión en código; desempata el ritmo más variado."""
-    problemas, m = auditar_texto(texto)
-    return len(problemas) - 0.5 * min(m.get("variacion_ritmo", 0.0), 1.0)
-
-
-def _candidato_valido(parrafo, nuevo):
-    """Limpia un candidato y lo descarta si quedó igual, cambió mucho de largo o perdió datos."""
-    nuevo, _ = clean_text(nuevo or "")
-    nuevo = " ".join(dividir_parrafos(nuevo))          # sigue siendo un solo párrafo
-    if not nuevo or _clave_texto(nuevo) == _clave_texto(parrafo):
-        return None
-    n0, n1 = contar_palabras(parrafo), contar_palabras(nuevo)
-    if not (0.88 * n0 <= n1 <= 1.30 * n0) or datos_faltantes(parrafo, nuevo):
-        return None
-    return nuevo
-
-
-def reescribir_parrafo_marcado(parrafo, marcadas, plan, opciones, avisos, usados, tiempos, intento=0):
-    """Pide varias versiones de un párrafo marcado (cada una a un modelo distinto) y se queda con la mejor.
-    Si el párrafo ya se reescribió antes y lo volvieron a marcar, una versión se redacta desde apuntes.
-    Si ninguna conserva el contenido, devuelve el párrafo sin cambios."""
+def reescribir_parrafo_marcado(parrafo, marcadas, plan, opciones, avisos, usados, tiempos):
+    """Reescribe un párrafo marcado por un detector. Si pierde contenido, devuelve el párrafo sin cambios."""
     lista = "\n".join(f"- {o}" for o in marcadas) if marcadas else "- (todo el párrafo)"
-    palabras = contar_palabras(parrafo)
-    entrada = (f"El párrafo tiene {palabras} palabras.\n\nORACIONES MARCADAS:\n{lista}\n\n"
+    entrada = (f"El párrafo tiene {contar_palabras(parrafo)} palabras.\n\nORACIONES MARCADAS:\n{lista}\n\n"
                f"PÁRRAFO:\n{parrafo}")
-    muestra = opciones.get("muestra")
-    orden = plan["detector"]
-    validos = []
-    for k in range(max(1, opciones.get("candidatos", 1))):
-        giro = (intento + k) % len(orden)
-        plan_k = dict(plan)
-        plan_k["detector"] = orden[giro:] + orden[:giro]
-        try:
-            if intento >= 1 and k == 0:
-                # Desde apuntes: el modelo redacta sin ver las frases anteriores, así no hereda su molde
-                apuntes, _ = generar(PROMPT_APUNTES, parrafo, 0.3, "detector", plan_k, avisos, usados, tiempos)
-                nuevo, _ = generar(con_muestra(PROMPT_DESDE_APUNTES, muestra),
-                                   f"El párrafo debe tener unas {palabras} palabras.\n\nAPUNTES:\n{apuntes}",
-                                   TEMP_FINAL, "detector", plan_k, avisos, usados, tiempos)
-            else:
-                nuevo, _ = generar(con_muestra(PROMPT_DETECTOR, muestra), entrada, TEMP_FINAL,
-                                   "detector", plan_k, avisos, usados, tiempos)
-        except Exception:
-            continue
-        nuevo = _candidato_valido(parrafo, nuevo)
-        if nuevo:
-            validos.append(nuevo)
-    return min(validos, key=puntaje_local) if validos else parrafo
-
-
-def resolver_modelos(plan):
-    """Deja lista la lista de modelos de cada proveedor antes de abrir hilos."""
-    for pid in {p for pasos in plan.values() for p in pasos}:
-        if pid not in MODELOS_RESUELTOS and PROVEEDORES[pid]["tipo"] != "gemini":
-            try:
-                MODELOS_RESUELTOS[pid] = detectar_modelos(pid, CLAVES[pid])
-            except Exception:
-                pass
-
-
-def reescribir_candidatos(parrafos, candidatos, plan, opciones, avisos, usados, tiempos, intentos):
-    """Reescribe en paralelo los párrafos [(índice, oraciones marcadas)]. Devuelve cuántos cambiaron."""
-    with ThreadPoolExecutor(max_workers=BLOQUES_EN_PARALELO) as pool:
-        nuevos = list(pool.map(
-            lambda c: reescribir_parrafo_marcado(parrafos[c[0]], c[1], plan, opciones, avisos, usados, tiempos,
-                                                 intento=intentos.get(c[0], 0)),
-            candidatos,
-        ))
-    cambiados = 0
-    for (i, _), nuevo in zip(candidatos, nuevos):
-        intentos[i] = intentos.get(i, 0) + 1
-        if nuevo != parrafos[i]:
-            parrafos[i] = nuevo
-            cambiados += 1
-    return cambiados
+    try:
+        nuevo, _ = generar(con_muestra(PROMPT_DETECTOR, opciones.get("muestra")), entrada, TEMP_FINAL,
+                           "detector", plan, avisos, usados, tiempos)
+    except Exception:
+        return parrafo
+    nuevo, _ = clean_text(nuevo)
+    nuevo = " ".join(dividir_parrafos(nuevo))          # sigue siendo un solo párrafo
+    largo_ok = 0.88 * contar_palabras(parrafo) <= contar_palabras(nuevo) <= 1.30 * contar_palabras(parrafo)
+    if not nuevo or not largo_ok or datos_faltantes(parrafo, nuevo):
+        return parrafo
+    return nuevo
 
 
 def ajustar_con_detectores(texto, plan, opciones, avisos, usados, tiempos, avanzar):
     """CAPA D: mide, reescribe solo lo marcado y vuelve a medir. Se queda con la versión de menor puntaje."""
-    rondas_max = opciones.get("rondas", RONDAS_DETECTOR)
-    historial, mejor, intentos = [], None, {}
+    historial, mejor = [], None
 
     def peor_de(mediciones):
         validas = [m["ia"] for m in mediciones if "ia" in m]
         return max(validas) if validas else None
 
-    for ronda in range(rondas_max + 1):
+    for ronda in range(RONDAS_DETECTOR + 1):
         avanzar(f"Midiendo en {' y '.join(detectores_activos())} (medición {ronda + 1})")
         mediciones = medir_detectores(texto)
         peor = peor_de(mediciones)
@@ -1719,10 +1629,7 @@ def ajustar_con_detectores(texto, plan, opciones, avisos, usados, tiempos, avanz
         historial.append(peor)
         if mejor is None or mejor[0] is None or peor < mejor[0]:
             mejor = (peor, texto, mediciones)
-        else:
-            # La ronda no mejoró: se vuelve a la mejor versión y se insiste con otra estrategia
-            texto, mediciones = mejor[1], mejor[2]
-        if mejor[0] < OBJETIVO_IA or ronda == rondas_max:
+        if peor < OBJETIVO_IA or ronda == RONDAS_DETECTOR:
             break
 
         frases = [f for m in mediciones if m.get("ia", 0) >= OBJETIVO_IA for f in m.get("frases", [])]
@@ -1743,8 +1650,24 @@ def ajustar_con_detectores(texto, plan, opciones, avisos, usados, tiempos, avanz
             candidatos = [(i, []) for i in orden]
         candidatos = candidatos[:PARRAFOS_POR_RONDA]
 
-        avanzar(f"Reescribiendo {len(candidatos)} párrafo(s) marcados (ronda {ronda + 1} de {rondas_max})")
-        if not reescribir_candidatos(parrafos, candidatos, plan, opciones, avisos, usados, tiempos, intentos):
+        # Cada ronda empieza por un modelo distinto
+        plan_ronda = dict(plan)
+        lista = plan["detector"]
+        k = ronda % len(lista)
+        plan_ronda["detector"] = lista[k:] + lista[:k]
+
+        avanzar(f"Reescribiendo {len(candidatos)} párrafo(s) marcados (ronda {ronda + 1} de {RONDAS_DETECTOR})")
+        with ThreadPoolExecutor(max_workers=BLOQUES_EN_PARALELO) as pool:
+            nuevos = list(pool.map(
+                lambda c: reescribir_parrafo_marcado(parrafos[c[0]], c[1], plan_ronda, opciones, avisos, usados, tiempos),
+                candidatos,
+            ))
+        cambiados = 0
+        for (i, _), nuevo in zip(candidatos, nuevos):
+            if nuevo != parrafos[i]:
+                parrafos[i] = nuevo
+                cambiados += 1
+        if not cambiados:
             break
         texto, _ = clean_text("\n\n".join(parrafos))
 
@@ -1756,31 +1679,8 @@ def ajustar_con_detectores(texto, plan, opciones, avisos, usados, tiempos, avanz
             avisos.append(f"{m['nombre']} no respondió ({m['error'][:140]}).")
         elif m["ia"] >= OBJETIVO_IA:
             avisos.append(f"{m['nombre']} todavía marca {round(m['ia'])}% de IA tras {info['rondas']} ronda(s) de ajuste. "
-                          "Pega abajo las frases que señale (ajuste manual), sube las rondas o vuelve a pulsar Humanizar texto.")
+                          "Cambia a mano las frases que señale o vuelve a pulsar Humanizar texto.")
     return texto_final, info
-
-
-def opciones_actuales():
-    return {"retro": usar_retrotraduccion, "auditoria": usar_auditoria, "profundo": modo_profundo,
-            "muestra": muestra_estilo, "rondas": rondas_detector,
-            "candidatos": CANDIDATOS_POR_PARRAFO if modo_profundo else 1}
-
-
-def ajustar_marcado_a_mano(texto, pegado, intento):
-    """Reescribe solo los párrafos que contienen las oraciones pegadas (QuillBot, Grammarly u otro detector)."""
-    avisos, usados, tiempos = [], {}, {}
-    plan = armar_plan()
-    resolver_modelos(plan)
-    frases = [l.strip() for l in re.split(r"\n+", pegado) if l.strip()]
-    parrafos = dividir_parrafos(texto)
-    candidatos = [(i, oraciones_marcadas(p, frases)) for i, p in enumerate(parrafos) if not es_titulo(p)]
-    candidatos = [c for c in candidatos if c[1]]
-    if not candidatos:
-        return texto, 0, 0, avisos
-    intentos = {i: intento for i, _ in candidatos}
-    cambiados = reescribir_candidatos(parrafos, candidatos, plan, opciones_actuales(), avisos, usados, tiempos, intentos)
-    nuevo, _ = clean_text("\n\n".join(parrafos))
-    return nuevo, len(candidatos), cambiados, avisos
 
 
 def procesar(texto_original, estado):
@@ -1793,73 +1693,103 @@ def procesar(texto_original, estado):
         estado.update(label=f"{texto} ({round(time.monotonic() - inicio_total)} s)")
 
     partir = usar_estructura
-    opciones = opciones_actuales()
+    opciones = {"retro": usar_retrotraduccion, "auditoria": usar_auditoria, "profundo": modo_profundo,
+                "muestra": muestra_estilo}
+
+    def una_pasada(texto_entrada, partir_p, numero):
+        """Humaniza un texto completo por bloques. Devuelve (texto, modelo, usados, tiempos, antes, bloques)."""
+        sufijo = f" (pasada {numero} de {pasadas})" if pasadas > 1 else ""
+        bloques = dividir_en_bloques(texto_entrada)
+        a_procesar = [i for i, (titulo, _) in enumerate(bloques) if not titulo]
+        resultados = {}
+        total = len(a_procesar)
+        avanzar((f"Humanizando {total} bloque(s) en paralelo" if total > 1 else "Humanizando el texto") + sufijo)
+        with ThreadPoolExecutor(max_workers=max(1, min(BLOQUES_EN_PARALELO, total))) as pool:
+            futuros = {
+                pool.submit(procesar_bloque, bloques[i][1], plan_para_bloque(plan, n + numero - 1), partir_p, avisos, opciones): i
+                for n, i in enumerate(a_procesar)
+            }
+            pendientes = set(futuros)
+            fallidos = {}
+            while pendientes:
+                hechos, pendientes = wait(pendientes, timeout=1, return_when=FIRST_COMPLETED)
+                for f in hechos:
+                    try:
+                        resultados[futuros[f]] = f.result()
+                    except Exception as e_bloque:
+                        fallidos[futuros[f]] = e_bloque
+                listos = total - len(pendientes)
+                avanzar((f"Bloques listos: {listos} de {total}" if total > 1 else "Humanizando el texto") + sufijo)
+
+        # Un bloque que falló (por cuota, casi siempre) se reintenta solo, tras una pausa corta
+        for n, i in enumerate(sorted(fallidos)):
+            avanzar(f"Reintentando un bloque que se quedó sin cuota ({n + 1} de {len(fallidos)})")
+            time.sleep(4)
+            try:
+                resultados[i] = procesar_bloque(bloques[i][1], plan_para_bloque(plan, i + 1), partir_p, avisos, opciones)
+                del fallidos[i]
+            except Exception as e_bloque:
+                fallidos[i] = e_bloque
+        if fallidos and len(fallidos) == total:
+            raise next(iter(fallidos.values()))   # nada se pudo procesar: se muestra el error
+        for i, e_bloque in fallidos.items():
+            # Mejor un resultado parcial que perder todo el trabajo
+            resultados[i] = (bloques[i][1], "", {}, {}, 0)
+            avisos.append(f"Un bloque no se pudo humanizar ({str(e_bloque)[:120]}) y quedó como estaba. "
+                          "Espera un minuto y vuelve a pasar solo ese párrafo.")
+
+        # Arma el texto en el orden original (los títulos quedan tal cual)
+        partes, usados_p, tiempos_p, antes_p, modelo_p = [], {}, {}, 0, ""
+        for i, (titulo, texto) in enumerate(bloques):
+            if titulo:
+                partes.append(texto)
+                continue
+            texto_bloque, modelo_bloque, usados_b, tiempos_b, antes_b = resultados[i]
+            partes.append(texto_bloque)
+            modelo_p = modelo_p or modelo_bloque
+            antes_p += antes_b
+            for k, v in usados_b.items():
+                usados_p.setdefault(k, v)
+            for k, v in tiempos_b.items():
+                tiempos_p[k] = max(tiempos_p.get(k, 0), v)   # en paralelo cuenta el bloque más lento
+        return clean_text("\n\n".join(partes))[0], modelo_p, usados_p, tiempos_p, antes_p, total
 
     avanzar("Limpiando caracteres ocultos y formato")
     texto_base, _ = clean_text(texto_original)
-    bloques = dividir_en_bloques(texto_base)
-    a_procesar = [i for i, (titulo, _) in enumerate(bloques) if not titulo]
-    resultados = {}
 
     # Asegura que la lista de modelos de cada proveedor esté lista antes de abrir los hilos
-    resolver_modelos(plan)
+    for pid in {p for pasos in plan.values() for p in pasos}:
+        if pid not in MODELOS_RESUELTOS and PROVEEDORES[pid]["tipo"] != "gemini":
+            try:
+                MODELOS_RESUELTOS[pid] = detectar_modelos(pid, CLAVES[pid])
+            except Exception:
+                pass
 
-    total = len(a_procesar)
-    avanzar(f"Humanizando {total} bloque(s) en paralelo" if total > 1 else "Humanizando el texto")
-    with ThreadPoolExecutor(max_workers=max(1, min(BLOQUES_EN_PARALELO, total))) as pool:
-        futuros = {
-            pool.submit(procesar_bloque, bloques[i][1], plan_para_bloque(plan, n), partir, avisos, opciones): i
-            for n, i in enumerate(a_procesar)
-        }
-        pendientes = set(futuros)
-        fallidos = {}
-        while pendientes:
-            hechos, pendientes = wait(pendientes, timeout=1, return_when=FIRST_COMPLETED)
-            for f in hechos:
-                try:
-                    resultados[futuros[f]] = f.result()
-                except Exception as e_bloque:
-                    fallidos[futuros[f]] = e_bloque
-            listos = total - len(pendientes)
-            avanzar(f"Bloques listos: {listos} de {total}" if total > 1 else "Humanizando el texto")
+    texto_limpio, modelo_final, usados, tiempos, antes, total = una_pasada(texto_base, partir, 1)
 
-    # Un bloque que falló (por cuota, casi siempre) se reintenta solo, tras una pausa corta
-    for n, i in enumerate(sorted(fallidos)):
-        avanzar(f"Reintentando un bloque que se quedó sin cuota ({n + 1} de {len(fallidos)})")
-        time.sleep(4)
+    # PASADAS EXTRA: el resultado vuelve a entrar al humanizador (sin volver a dividir párrafos)
+    for numero in range(2, pasadas + 1):
         try:
-            resultados[i] = procesar_bloque(bloques[i][1], plan_para_bloque(plan, i + 1), partir, avisos, opciones)
-            del fallidos[i]
-        except Exception as e_bloque:
-            fallidos[i] = e_bloque
-    if fallidos and len(fallidos) == total:
-        raise next(iter(fallidos.values()))   # nada se pudo procesar: se muestra el error
-    for i, e_bloque in fallidos.items():
-        # Mejor un resultado parcial que perder todo el trabajo
-        resultados[i] = (bloques[i][1], "", {}, {}, 0)
-        avisos.append(f"Un bloque no se pudo humanizar ({str(e_bloque)[:120]}) y quedó con el texto original. "
-                      "Espera un minuto y vuelve a pasar solo ese párrafo.")
-
-    # Arma el texto final en el orden original (los títulos quedan tal cual)
-    partes, usados, tiempos, antes, modelo_final = [], {}, {}, 0, ""
-    for i, (titulo, texto) in enumerate(bloques):
-        if titulo:
-            partes.append(texto)
-            continue
-        texto_bloque, modelo_bloque, usados_b, tiempos_b, antes_b = resultados[i]
-        partes.append(texto_bloque)
-        modelo_final = modelo_final or modelo_bloque
-        antes += antes_b
-        for k, v in usados_b.items():
+            otro, modelo_p, usados_p, tiempos_p, _, _ = una_pasada(texto_limpio, False, numero)
+        except Exception as e_pasada:
+            avisos.append(f"La pasada {numero} no se pudo completar ({str(e_pasada)[:120]}). Quedó el resultado de la pasada anterior.")
+            break
+        # Se acepta solo si no se alejó del original: mismo largo y mismos datos
+        corto = contar_palabras(otro) < 0.85 * contar_palabras(texto_base)
+        pierde = len(datos_faltantes(texto_base, otro)) > len(datos_faltantes(texto_base, texto_limpio))
+        if corto or pierde:
+            avisos.append(f"La pasada {numero} {'acortó el texto' if corto else 'perdió datos del original'} y se descartó. "
+                          "Quedó el resultado de la pasada anterior.")
+            break
+        texto_limpio, modelo_final = otro, (modelo_p or modelo_final)
+        for k, v in usados_p.items():
             usados.setdefault(k, v)
-        for k, v in tiempos_b.items():
-            tiempos[k] = max(tiempos.get(k, 0), v)   # en paralelo cuenta el bloque más lento
-
-    texto_limpio, _ = clean_text("\n\n".join(partes))
+        for k, v in tiempos_p.items():
+            tiempos[k] = tiempos.get(k, 0) + v
 
     # CAPA D: medir en los detectores conectados y reescribir solo lo que marcan
     info_detectores = None
-    if usar_detectores and detectores_activos() and not (fallidos and len(fallidos) == total):
+    if usar_detectores and detectores_activos():
         try:
             texto_limpio, info_detectores = ajustar_con_detectores(
                 texto_limpio, plan, opciones, avisos, usados, tiempos, avanzar)
@@ -1870,6 +1800,7 @@ def procesar(texto_original, estado):
     metricas["palabras_original"] = contar_palabras(texto_base)
     metricas["palabras_resultado"] = contar_palabras(texto_limpio)
     metricas["bloques"] = total
+    metricas["pasadas"] = pasadas
     auditoria = {"antes": antes, "despues": problemas_finales, "metricas": metricas, "modelos": usados,
                  "detectores": info_detectores,
                  "tiempos": {k: round(v, 1) for k, v in tiempos.items()},
@@ -1944,7 +1875,6 @@ with col1:
                     st.session_state["texto_fuente"] = texto_base
                     st.session_state["avisos"] = avisos
                     st.session_state["auditoria"] = auditoria
-                    st.session_state["ajustes_manuales"] = 0
                     st.toast(f"Listo en {formato_tiempo(auditoria['tiempo_total'])}. Redacción final: {modelo_final}.")
                     st.rerun()
             if error_proceso is not None:
@@ -2020,48 +1950,6 @@ with col2:
             st.iframe(html_boton, height=60)
         else:
             components.html(html_boton, height=60)
-
-        with st.expander("Ajustar lo que marcó QuillBot, Grammarly u otro detector"):
-            st.caption("Estos detectores no tienen API. Pega el resultado en su página, copia las oraciones que "
-                       "resalten (una por línea) y pégalas aquí: se reescriben solo los párrafos que las contienen.")
-            pegado = st.text_area("Oraciones marcadas", height=120, key="marcadas_manual",
-                                  label_visibility="collapsed", placeholder="Una oración marcada por línea.")
-            if st.button("Reescribir lo marcado", key="btn_marcadas", width="stretch"):
-                if not pegado.strip():
-                    st.warning("Pega primero las oraciones que marcó el detector.")
-                elif not conectados:
-                    st.error("Falta configurar al menos una API key en los Secretos de Streamlit.")
-                else:
-                    intento = st.session_state.get("ajustes_manuales", 0)
-                    try:
-                        with st.spinner("Reescribiendo los párrafos marcados"):
-                            nuevo, hallados, cambiados, avisos_m = ajustar_marcado_a_mano(resultado, pegado, intento)
-                    except Exception as e_m:
-                        causa, _ = explicar_error(e_m)
-                        st.error(causa)
-                    else:
-                        if not hallados:
-                            st.warning("Ninguna de esas oraciones aparece en el texto. Cópialas tal como salen en el resultado.")
-                        elif not cambiados:
-                            st.warning("No se logró una versión que conserve todos los datos. Vuelve a intentarlo.")
-                        else:
-                            fuente_m = st.session_state.get("texto_fuente", "")
-                            aud_m = st.session_state.get("auditoria") or {}
-                            pend_m, _ = auditar_texto(nuevo, fuente_m or None, usar_estructura)
-                            aud_m["despues"] = pend_m
-                            aud_m.setdefault("metricas", {})["palabras_resultado"] = contar_palabras(nuevo)
-                            if usar_detectores and detectores_activos():
-                                med = medir_detectores(nuevo)
-                                aud_m["detectores"] = {"mediciones": [{k: v for k, v in m.items() if k != "frases"} for m in med],
-                                                       "historial": [], "rondas": 0}
-                            else:
-                                aud_m["detectores"] = None
-                            st.session_state["auditoria"] = aud_m
-                            st.session_state["texto_humanizado"] = nuevo
-                            st.session_state["avisos"] = avisos_m
-                            st.session_state["ajustes_manuales"] = intento + 1
-                            st.toast(f"Se reescribieron {cambiados} párrafo(s).")
-                            st.rerun()
 
 for aviso in st.session_state["avisos"]:
     st.warning(aviso)
