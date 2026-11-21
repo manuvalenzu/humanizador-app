@@ -1153,8 +1153,9 @@ with st.sidebar:
     modo_profundo = st.toggle(
         "Modo profundo (más lento)",
         value=False,
-        help="Apagado: una sola pasada por bloque, mucho más rápido. "
-             "Encendido: retrotraducción, capa de estructura y dos rondas de corrección (4 a 6 llamadas por bloque).",
+        help="Apagado: una sola llamada por bloque, mucho más rápido. "
+             "Encendido: pasa el texto por el inglés y de vuelta, reordena la estructura y corrige dos veces "
+             "(4 a 6 llamadas por bloque).",
     )
     pasadas = st.slider(
         "Pasadas de humanización", 1, 3, 2,
@@ -1167,12 +1168,7 @@ with st.sidebar:
         disabled=not modo_profundo,
         help="Reparte traducción, estructura y redacción entre modelos distintos para no dejar la huella de uno solo.",
     )
-    usar_retrotraduccion = st.toggle(
-        "Retrotraducción español, inglés, español",
-        value=True,
-        disabled=not modo_profundo,
-        help="Capa B: desarma el texto pasándolo por el inglés antes de la redacción final.",
-    )
+    usar_retrotraduccion = True    # sin interruptor: se aplica siempre dentro del modo profundo
     usar_estructura = st.toggle(
         "Romper estructura de párrafos",
         value=True,
@@ -1184,19 +1180,7 @@ with st.sidebar:
         value=True,
         help="Capa C: revisa ritmo, muletillas, enumeraciones, gerundios, inicios y cierre, y corrige hasta 3 veces.",
     )
-    det_activos = detectores_activos()
-    usar_detectores = st.toggle(
-        "Verificar con GPTZero y Copyleaks",
-        value=bool(det_activos),
-        disabled=not det_activos,
-        help="Capa D: mide el resultado en los detectores conectados y reescribe solo las oraciones que marcan, "
-             f"hasta {RONDAS_DETECTOR} rondas. Cada medición gasta créditos de tu cuenta del detector. "
-             "QuillBot y Grammarly no tienen API: esos dos se revisan a mano.",
-    )
-    if det_activos:
-        st.caption("Detectores conectados: " + " y ".join(det_activos) + ".")
-    else:
-        st.caption("Sin detectores conectados. Agrega GPTZERO_API_KEY, o COPYLEAKS_EMAIL y COPYLEAKS_API_KEY, en Secretos.")
+    usar_detectores = False        # verificación con GPTZero y Copyleaks desactivada (sin interruptor)
     muestra_estilo = st.text_area(
         "Muestra de tu propia escritura (opcional)",
         height=140, max_chars=3000, key="muestra_estilo",
@@ -1210,7 +1194,6 @@ with st.sidebar:
             "En Streamlit Cloud, abre **Settings → Secrets** y agrega las claves que tengas:\n\n"
             + "\n".join(f"- `{PROVEEDORES[pid]['clave']}` para {nombres[pid]}" for pid in ORDEN_CALIDAD)
             + "\n\nPara fijar un modelo concreto, agrega por ejemplo `OPENAI_MODEL = \"nombre-del-modelo\"`."
-            + "\n\nPara medir el resultado en detectores reales, agrega `GPTZERO_API_KEY`, o `COPYLEAKS_EMAIL` y `COPYLEAKS_API_KEY`."
         )
 
     st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
@@ -1411,6 +1394,19 @@ def proveedor_en_pausa(pid):
 
 def pausar_proveedor(pid, segundos):
     PAUSADOS[pid] = max(PAUSADOS.get(pid, 0), time.time() + segundos)
+
+
+def esperar_cuota(pid, avanzar):
+    """Si el proveedor principal está en pausa por cuota por minuto, espera a que se renueve (65 s como máximo)
+    en vez de saltar a los proveedores lentos. Las pausas largas (clave rechazada) no se esperan."""
+    resta = PAUSADOS.get(pid, 0) - time.time()
+    if not 0 < resta <= PAUSA_CUOTA:
+        return
+    fin = time.time() + min(resta, 65)
+    while time.time() < fin:
+        avanzar(f"Esperando que se renueve la cuota de {PROVEEDORES[pid]['nombre']} (faltan {round(fin - time.time())} s)")
+        time.sleep(1)
+    PAUSADOS.pop(pid, None)
 
 
 def generar(system_prompt, texto, temperature, paso, plan, avisos, usados, tiempos):
@@ -1704,7 +1700,8 @@ def procesar(texto_original, estado):
         resultados = {}
         total = len(a_procesar)
         avanzar((f"Humanizando {total} bloque(s) en paralelo" if total > 1 else "Humanizando el texto") + sufijo)
-        with ThreadPoolExecutor(max_workers=max(1, min(BLOQUES_EN_PARALELO, total))) as pool:
+        hilos = 1 if numero > 1 else max(1, min(BLOQUES_EN_PARALELO, total))
+        with ThreadPoolExecutor(max_workers=hilos) as pool:
             futuros = {
                 pool.submit(procesar_bloque, bloques[i][1], plan_para_bloque(plan, n + numero - 1), partir_p, avisos, opciones): i
                 for n, i in enumerate(a_procesar)
@@ -1723,8 +1720,9 @@ def procesar(texto_original, estado):
 
         # Un bloque que falló (por cuota, casi siempre) se reintenta solo, tras una pausa corta
         for n, i in enumerate(sorted(fallidos)):
+            esperar_cuota(plan["final"][0], avanzar)
             avanzar(f"Reintentando un bloque que se quedó sin cuota ({n + 1} de {len(fallidos)})")
-            time.sleep(4)
+            time.sleep(2)
             try:
                 resultados[i] = procesar_bloque(bloques[i][1], plan_para_bloque(plan, i + 1), partir_p, avisos, opciones)
                 del fallidos[i]
@@ -1769,6 +1767,7 @@ def procesar(texto_original, estado):
 
     # PASADAS EXTRA: el resultado vuelve a entrar al humanizador (sin volver a dividir párrafos)
     for numero in range(2, pasadas + 1):
+        esperar_cuota(plan["final"][0], avanzar)
         try:
             otro, modelo_p, usados_p, tiempos_p, _, _ = una_pasada(texto_limpio, False, numero)
         except Exception as e_pasada:
@@ -2007,9 +2006,6 @@ if st.session_state["texto_humanizado"] and aud:
                       + ", ".join(f"{round(h)}%" for h in info_det["historial"]) + ".")
         extension += (f'<p class="ritmo-intro">Detectores: {"; ".join(partes_det)}.{camino} '
                       "QuillBot y Grammarly no tienen API: pega el texto en sus páginas para revisarlos.</p>")
-    else:
-        extension += ('<p class="ritmo-intro">Detectores: sin medir. Conecta GPTZero o Copyleaks en Secretos '
-                      "para ver el porcentaje real y ajustar el texto solo.</p>")
     filas = (fila_ritmo("Original", fuente, "barra-orig") if fuente else "") + \
         fila_ritmo("Humanizado", st.session_state["texto_humanizado"], "barra-hum")
     st.markdown(
