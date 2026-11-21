@@ -296,46 +296,53 @@ with col_btn1:
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key.")
         else:
-            with st.spinner("Aplicando reescritura con imperfección humana..."):
+            with st.spinner("Desconstruyendo estructura y reescribiendo con voz humana..."):
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
-                    
-                    prompt_sistema = """
-                    Eres un editor humano experto. Recibes un texto y lo devuelves sonando como si lo hubiera escrito una persona concreta, para un lector concreto. Corriges la forma; el contenido se queda.
-                    
-                    REGLAS QUE NO SE ROMPEN:
-                    1. No inventes datos, cifras, nombres, citas ni fuentes.
-                    2. Conserva el sentido, incluidas las afirmaciones y advertencias.
-                    3. No toques citas textuales, referencias, nombres propios ni términos técnicos.
-                    
-                    PASO 1: DETECTAR Y ELIMINAR LAS MARCAS DE IA (Sin piedad)
-                    - Inflado: "marca un antes y un después", "es un testimonio de", "juega un rol fundamental", "en el panorama actual".
-                    - Tono de folleto: "vibrante", "enclavado en", "imperdible", "de primer nivel".
-                    - Estructuras repetidas: "No se trata solo de X, sino de Y", tríos forzados (innovación, compromiso y excelencia), gerundios de remate (..., reflejando su compromiso).
-                    - Vocabulario de piloto automático: "cabe destacar", "es importante señalar", "en este sentido", "potenciar", "fomentar", "robusto", "integral", "sinergia", "abordar", "clave", "crucial", "fundamental", "en definitiva".
-                    - Evitar el verbo ser: "se erige como", "se posiciona como", "constituye".
-                    - Formato: Quita negritas salpicadas, listas con "**Título:**" y comillas curvas.
-                    
-                    PASO 2: REESCRIBIR CON "TOQUE DE IMPERFECCIÓN" (CRUCIAL para engañar al detector)
-                    - Destruye la estructura de IA. No todas las oraciones deben ser perfectas.
-                    - Rompe la simetría: Varía el ritmo. Usa una frase muy corta (de 3 o 4 palabras) de vez en cuando. Luego una larga.
-                    - Usa "ruido humano": Introduce un paréntesis para una aclaración personal. Empieza alguna frase con "Y" o "Pero" (aunque sea académico, hazlo una vez).
-                    - Evita la perfección: No busques el sinónimo perfecto. A veces, repetir la palabra correcta suena más humano que usar un sinónimo rebuscado.
-                    - Conectores reales: Usa "pero", "por eso", "aunque" en lugar de "sin embargo", "por consiguiente", "no obstante".
-                    - Termina sin moraleja: No cierres con una conclusión genérica. Termina cuando se acabe la idea.
-                    - Prohibido: No uses emojis, ni negritas, ni listas. Solo prosa.
-                    
-                    TONO: Académico Formal pero con textura humana. No suenes como un robot pulido. Suena como un profesor o un investigador que escribe con naturalidad, sin pretender ser perfecto.
-                    
-                    RESULTADO: Devuelve SOLO el texto final, sin explicaciones ni saludos.
+
+                    # PASO 1: DESTRUIR LA SINTAXIS DE IA (Extracción pura de hechos)
+                    prompt_extraccion = """
+                    Extrae únicamente las ideas principales, argumentos, datos y citas de este texto en una lista simple de viñetas cortas y directas. 
+                    Elimina cualquier introducción, conclusión, adjetivo innecesario o conector. Solo hechos e ideas crudas.
                     """
                     
-                    response = client.models.generate_content(
-                        model="gemini-3.6-flash", # CAMBIADO A 3.6 PARA EVITAR EL ERROR 503
+                    resp_ideas = client.models.generate_content(
+                        model="gemini-3.6-flash",
                         contents=texto_original,
                         config=types.GenerateContentConfig(
-                            system_instruction=prompt_sistema, 
-                            temperature=0.95,
+                            system_instruction=prompt_extraccion,
+                            temperature=0.3,
+                        )
+                    )
+                    ideas_crudas = resp_ideas.text
+
+                    # PASO 2: RECONSTRUIR DESDE CERO CON ALTA VARIABILIDAD (Burstiness)
+                    prompt_redaccion = """
+                    Eres un investigador escribiendo un borrador serio pero directo. Redacta un texto continuo usando ÚNICAMENTE las ideas de la lista que recibirás.
+
+                    REGLAS DE RITMO Y ESTILO:
+                    - Prohibido usar listas de tres elementos (ej: "A, B y C"). Usa uno o dos.
+                    - Prohibido usar frases de contraste simétrico ("Abre posibilidades, pero plantea retos").
+                    - Alterna bruscamente el largo de las oraciones: escribe una oración larga y compleja (25-35 palabras) y síguela con una muy corta (5-8 palabras).
+                    - Empieza los párrafos directamente con el sujeto o el problema, nunca con fórmulas vacías ("La inteligencia artificial entró de lleno...").
+                    - No escribas párrafo de conclusión ni moraleja final. Termina en el último argumento.
+                    - No uses negritas, viñetas ni comillas curvas.
+
+                    EJEMPLO DE CÓMO DEBES ESCRIBIR:
+                    Mal (IA): "La tecnología transforma la educación y plantea desafíos éticos, pedagógicos y técnicos que debemos abordar."
+                    Bien (Humano): "El problema real en las universidades no es el software. Es que nadie actualizó cómo se evalúa a los estudiantes cuando una máquina puede redactar un ensayo en diez segundos."
+
+                    Devuelve SOLO el texto final.
+                    """
+
+                    response = client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=f"Ideas a desarrollar:\n{ideas_crudas}",
+                        config=types.GenerateContentConfig(
+                            system_instruction=prompt_redaccion,
+                            temperature=1.15,
+                            top_p=0.95,
+                            top_k=64,
                         )
                     )
                     
@@ -346,7 +353,7 @@ with col_btn1:
                     st.session_state["texto_humanizado"] = texto_limpio
                     
                     if reporte_limpieza:
-                        st.toast(f"🧹 Limpieza aplicada", icon="✅")
+                        st.toast("🧹 Limpieza aplicada", icon="✅")
                     
                     st.rerun() 
                     
