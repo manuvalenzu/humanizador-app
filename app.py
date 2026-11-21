@@ -2,6 +2,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 import streamlit.components.v1 as components
+import requests
 import json
 import re
 import unicodedata
@@ -10,15 +11,42 @@ import unicodedata
 st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wide")
 
 # ==========================================
-# LEE LA CLAVE DESDE LOS SECRETOS DE STREAMLIT
+# LEE LAS CLAVES DESDE LOS SECRETOS DE STREAMLIT
 # ==========================================
 try:
     MI_API_KEY = st.secrets["GEMINI_API_KEY"]
 except Exception:
     MI_API_KEY = None
 
+try:
+    MI_GROQ_KEY = st.secrets["GROQ_API_KEY"]
+except Exception:
+    MI_GROQ_KEY = None
+
 # ==========================================
-# LÓGICA DE LIMPIEZA (clean_marks.py)
+# CLIENTE LIGERO PARA LLAMA 3.3 (GROQ API)
+# ==========================================
+def llamar_llama_groq(api_key, system_prompt, user_text, temperature=0.95):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": temperature,
+        "top_p": 0.95,
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=45)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+# ==========================================
+# CAPA A: LÓGICA DE LIMPIEZA (clean_marks + regla §8 de Humanizer)
 # ==========================================
 INVISIBLE = {
     0x200B: "zero width space", 0x200C: "zero width non-joiner", 0x200D: "zero width joiner",
@@ -39,7 +67,7 @@ def _is_emoji(ch):
     return (0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2300 <= cp <= 0x23FF
             or 0x2B00 <= cp <= 0x2BFF or cp in (0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139, 0x3030, 0x303D))
 
-def clean_text(s, quotes=True, keep_nbsp=False):
+def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
     out, counts, prev = [], {}, ""
     i, n = 0, len(s)
 
@@ -77,6 +105,8 @@ def clean_text(s, quotes=True, keep_nbsp=False):
             hit("espacio duro (NBSP)"); out.append(" ")
         elif quotes and ch in QUOTES:
             hit("comilla curva"); out.append(QUOTES[ch])
+        elif strip_dashes and ch in ("—", "–"):
+            hit("raya de IA (em/en dash)"); out.append(", ")
         elif unicodedata.category(ch) in ("Cc",) and ch not in "\n\r\t":
             hit("carácter de control")
         elif unicodedata.category(ch) == "Co":
@@ -84,7 +114,11 @@ def clean_text(s, quotes=True, keep_nbsp=False):
         else:
             out.append(ch)
         prev = ch; i += 1
-    return "".join(out), counts
+
+    resultado = "".join(out)
+    resultado = re.sub(r" +,", ",", resultado)
+    resultado = re.sub(r"  +", " ", resultado)
+    return resultado.strip(), counts
 
 
 # --- CSS PERSONALIZADO ---
@@ -240,12 +274,25 @@ with st.sidebar:
     st.markdown("### Configuración")
     
     if not MI_API_KEY:
-        st.warning("⚠️ Falta la API Key. Por favor, agrégala en los Secretos de Streamlit.")
+        st.warning("⚠️ Falta GEMINI_API_KEY en Secretos.")
         MI_API_KEY = st.text_input("API Key de Gemini", type="password")
+
+    if not MI_GROQ_KEY:
+        st.info("💡 Agrega GROQ_API_KEY para activar Llama 3.3 en la Capa B.")
+        MI_GROQ_KEY = st.text_input("API Key de Groq (Opcional)", type="password")
     
-    st.markdown('<div class="tono-label">Tono del texto:</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tono-fijo">Académico Formal (con Toque Humano)</div>', unsafe_allow_html=True)
-    tono_seleccionado = "Académico Formal"
+    st.markdown('<div class="tono-label">Motor activo:</div>', unsafe_allow_html=True)
+    if MI_GROQ_KEY:
+        st.markdown('<div class="tono-fijo">Híbrido: Llama 3.3 + Gemini</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="tono-fijo">Solo Gemini (Estándar)</div>', unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    usar_retrotraduccion = st.toggle(
+        "Capa B: Retrotraducción ES→EN→ES",
+        value=True,
+        help="Rompe la distribución estadística de tokens usando Llama 3.3 (si hay clave de Groq) antes de la auditoría final."
+    )
     
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -294,53 +341,83 @@ with col_btn1:
         if not texto_original.strip():
             st.warning("Por favor, pega un texto primero.")
         elif not MI_API_KEY:
-            st.error("⚠️ Falta la API Key.")
+            st.error("⚠️ Falta la API Key de Gemini.")
         else:
-            with st.spinner("Desconstruyendo estructura y reescribiendo con voz humana..."):
+            motor_texto = "Llama 3.3 (Capa B) + Gemini (Humanizer)" if MI_GROQ_KEY else "Gemini (Capa B + Humanizer)"
+            with st.spinner(f"Procesando con {motor_texto}..."):
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
 
-                    # PASO 1: DESTRUIR LA SINTAXIS DE IA (Extracción pura de hechos)
-                    prompt_extraccion = """
-                    Extrae únicamente las ideas principales, argumentos, datos y citas de este texto en una lista simple de viñetas cortas y directas. 
-                    Elimina cualquier introducción, conclusión, adjetivo innecesario o conector. Solo hechos e ideas crudas.
+                    # 0. CAPA A EN ENTRADA: Limpiar marcas invisibles antes de procesar
+                    texto_base, _ = clean_text(texto_original, quotes=True, keep_nbsp=False, strip_dashes=True)
+
+                    prompt_en = "Translate the following Spanish text into plain, direct English. Preserve all facts, names, dates, and numbers. Output ONLY the English translation."
+                    prompt_es = """
+                    Traduce este texto al español natural y directo, como si lo escribiera un investigador o columnista.
+                    Cambia el orden de las cláusulas y los conectores. Preserva todos los datos, nombres, fechas y cifras sin inventar nada.
+                    Devuelve SOLO el texto en español.
                     """
-                    
-                    resp_ideas = client.models.generate_content(
-                        model="gemini-3.6-flash",
-                        contents=texto_original,
-                        config=types.GenerateContentConfig(
-                            system_instruction=prompt_extraccion,
-                            temperature=0.3,
-                        )
-                    )
-                    ideas_crudas = resp_ideas.text
+                    prompt_parafrasis = """
+                    Reescribe el siguiente texto usando palabras y estructuras sintácticas sustancialmente distintas.
+                    Cambia el orden de las cláusulas, los conectores y los límites de las oraciones.
+                    Preserva todos los hechos, cifras, nombres y términos técnicos. No agregues ni quites información.
+                    Devuelve SOLO el texto reescrito.
+                    """
 
-                    # PASO 2: RECONSTRUIR SIN NOMINALIZACIÓN (Anti-QuillBot y Anti-ZeroGPT)
-                    prompt_redaccion = """
-                    Eres un académico escribiendo una columna de opinión clara y directa. Redacta un texto continuo usando ÚNICAMENTE las ideas de la lista que recibirás.
+                    # 1. CAPA B: RUPTURA ESTADÍSTICA (Con Llama 3.3 si hay GROQ_API_KEY, si no con Gemini)
+                    if MI_GROQ_KEY:
+                        if usar_retrotraduccion:
+                            texto_en = llamar_llama_groq(MI_GROQ_KEY, prompt_en, texto_base, temperature=0.7)
+                            borrador = llamar_llama_groq(MI_GROQ_KEY, prompt_es, texto_en, temperature=0.95)
+                        else:
+                            borrador = llamar_llama_groq(MI_GROQ_KEY, prompt_parafrasis, texto_base, temperature=1.0)
+                    else:
+                        if usar_retrotraduccion:
+                            resp_en = client.models.generate_content(
+                                model="gemini-3.6-flash",
+                                contents=texto_base,
+                                config=types.GenerateContentConfig(system_instruction=prompt_en, temperature=0.7)
+                            )
+                            resp_borrador = client.models.generate_content(
+                                model="gemini-3.6-flash",
+                                contents=resp_en.text,
+                                config=types.GenerateContentConfig(system_instruction=prompt_es, temperature=0.95, top_p=0.95)
+                            )
+                            borrador = resp_borrador.text
+                        else:
+                            resp_borrador = client.models.generate_content(
+                                model="gemini-3.6-flash",
+                                contents=texto_base,
+                                config=types.GenerateContentConfig(system_instruction=prompt_parafrasis, temperature=1.0, top_p=0.95)
+                            )
+                            borrador = resp_borrador.text
 
-                    REGLAS OBLIGATORIAS PARA SONAR HUMANO:
-                    1. PROHIBIDO NOMINALIZAR: No uses sustantivos abstractos donde cabe un verbo.
-                       - Mal: "mediante la integración de sistemas que reconfiguran la gestión"
-                       - Bien: "al sumar herramientas que cambian cómo se administra la universidad"
-                       - Mal: "reside en la generación involuntaria de datos incorrectos"
-                       - Bien: "ocurre cuando el sistema inventa datos falsos sin que el usuario lo note"
-                    2. SUJETOS CONCRETOS: Habla de personas (profesores, estudiantes, investigadores, facultades) en lugar de conceptos abstractos ("el enfoque", "los riesgos éticos", "las evaluaciones").
-                    3. CERO CONECTORES DE IA: Prohibido usar "mediante", "reside en", "reconfiguran", "abarcan", "junto con", "en lugar de insistir en", "deben reorientarse hacia".
-                    4. RITMO NATURAL, NO MECÁNICO: No hagas el patrón obvio de "una frase gigante y una frase de 5 palabras". Usa oraciones medianas (12 a 20 palabras) mezcladas con algunas cortas y alguna más larga que incluya una pausa o aclaración natural.
-                    5. SIN CIERRE DE MORALEJA: No termines con frases genéricas ni recomendaciones obvias. Termina en el último dato o argumento.
-                    6. FORMATO: Solo prosa limpia. Sin negritas, sin listas y sin comillas curvas.
+                    # 2. AUDITORÍA Y REESCRITURA HUMANIZER (Gemini)
+                    prompt_humanizer = """
+                    Eres un editor humano experto aplicando una auditoría estricta de estilo. Tu trabajo es reescribir el borrador para eliminar TODA huella de redacción de IA, conservando exactamente los mismos hechos, datos, nombres y citas.
 
-                    Devuelve SOLO el texto final.
+                    ELIMINA SIN EXCEPCIÓN ESTOS PATRONES:
+                    1. Tríos forzados (§6): Si ves listas de 3 verbos o 3 sustantivos ("diseñar, elaborar y ajustar"; "buscar, ordenar y analizar"), rómpelas. Usa 1 o 2 elementos, o sepáralos en oraciones distintas.
+                    2. Contrastes prefabricados (§1): Elimina "No se trata solo de X, sino de Y", "abre posibilidades, pero plantea riesgos". Di el hecho directamente.
+                    3. Cierres con moraleja (§2 y §13): Si la última oración suena a conclusión genérica o recomendación ("Ningún avance reemplazará...", "El desafío consiste en..."), bórrala o reemplázala por el último dato concreto.
+                    4. Fórmulas vacías y muletillas de IA (§3 y §12): Prohibido usar "A su vez", "Ante este panorama", "entre los que destacan", "que no se pueden ignorar", "cabe destacar", "es fundamental", "fomentar", "abordar", "integral", "clave", "crucial", "mediante", "reside en".
+                    5. Gerundios de remate (§15): Elimina cláusulas pegadas al final con gerundio ("..., dejando de lado...", "..., promoviendo la equidad").
+                    6. Nominalización y verbos inflados (§18): Usa verbos simples y concretos (es, son, tiene, hace, cambia) y sujetos reales (profesores, estudiantes, universidades) en lugar de conceptos abstractos.
+                    7. Rayas y formato (§8 y §19): Cero rayas largas (— o –), cero negritas, cero listas, cero comillas curvas.
+
+                    RITMO HUMANO:
+                    - Alterna de forma natural oraciones cortas (6 a 10 palabras) con oraciones medianas y alguna larga. Que no suene mecánico ni simétrico.
+                    - Escribe como una persona real que va al grano, no como un folleto institucional.
+
+                    Devuelve ÚNICAMENTE el texto final limpio, sin saludos ni explicaciones.
                     """
 
                     response = client.models.generate_content(
                         model="gemini-3.6-flash",
-                        contents=f"Ideas a desarrollar:\n{ideas_crudas}",
+                        contents=borrador,
                         config=types.GenerateContentConfig(
-                            system_instruction=prompt_redaccion,
-                            temperature=1.0,
+                            system_instruction=prompt_humanizer,
+                            temperature=1.05,
                             top_p=0.95,
                             top_k=64,
                         )
@@ -348,17 +425,20 @@ with col_btn1:
                     
                     texto_generado = response.text
                     
-                    texto_limpio, reporte_limpieza = clean_text(texto_generado, quotes=True, keep_nbsp=False)
+                    # 3. CAPA A EN SALIDA: Limpieza final determinista
+                    texto_limpio, reporte_limpieza = clean_text(
+                        texto_generado, quotes=True, keep_nbsp=False, strip_dashes=True
+                    )
                     
                     st.session_state["texto_humanizado"] = texto_limpio
                     
                     if reporte_limpieza:
-                        st.toast("🧹 Limpieza aplicada", icon="✅")
+                        st.toast("🧹 Limpieza Capa A aplicada", icon="✅")
                     
                     st.rerun() 
                     
                 except Exception as e:
-                    st.error("Ocurrió un error al procesar el texto. Revisa tu conexión o intenta de nuevo en unos minutos.")
+                    st.error("Ocurrió un error al procesar el texto. Revisa tus API Keys o intenta de nuevo en unos minutos.")
                     print(f"Error técnico: {e}")
 
 with col_btn2:
