@@ -25,18 +25,49 @@ except Exception:
     MI_GROQ_KEY = None
 
 # ==========================================
-# CLIENTE LIGERO PARA LLAMA (GROQ API) CON RESPALDO DE MODELOS
+# AUTO-DETECCIÓN DE MODELOS ACTIVOS EN GROQ (SOLUCIÓN DEFINITIVA)
 # ==========================================
-def llamar_llama_groq(api_key, system_prompt, user_text, temperature=0.95):
+@st.cache_data(ttl=3600, show_spinner=False)
+def obtener_modelos_groq_activos(api_key):
+    url = "https://api.groq.com/openai/v1/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    resp = requests.get(url, headers=headers, timeout=20)
+    resp.raise_for_status()
+    data = resp.json().get("data", [])
+
+    excluidos = ("whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision", "audio")
+    candidatos = []
+    for item in data:
+        mid = item.get("id", "")
+        low = mid.lower()
+        if mid and not any(x in low for x in excluidos):
+            candidatos.append(mid)
+
+    # Ordena priorizando modelos de chat potentes y abiertos
+    prioridades = ("llama-4", "llama-3.3", "llama-3", "qwen", "deepseek", "gpt-oss", "kimi", "mistral", "gemma")
+    def puntaje(mid):
+        low = mid.lower()
+        for idx, pref in enumerate(prioridades):
+            if pref in low:
+                return idx
+        return len(prioridades)
+
+    candidatos.sort(key=puntaje)
+    return candidatos
+
+def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=0.95):
+    modelos = obtener_modelos_groq_activos(api_key)
+    if not modelos:
+        raise RuntimeError("No se encontraron modelos de chat activos en tu cuenta de Groq.")
+
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    modelos_groq = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-    ultimo_error = ""
 
-    for modelo in modelos_groq:
+    ultimo_error = ""
+    for modelo in modelos[:3]:  # Prueba hasta los 3 mejores modelos activos
         payload = {
             "model": modelo,
             "messages": [
@@ -48,13 +79,13 @@ def llamar_llama_groq(api_key, system_prompt, user_text, temperature=0.95):
         }
         resp = requests.post(url, headers=headers, json=payload, timeout=45)
         if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"]
+            return resp.json()["choices"][0]["message"]["content"], modelo
         ultimo_error = f"Groq ({modelo}) HTTP {resp.status_code}: {resp.text[:200]}"
 
     raise RuntimeError(ultimo_error)
 
 # ==========================================
-# LLAMADA A GEMINI CON REINTENTO ANTE ERRORES TEMPORALES (503/429)
+# LLAMADA A GEMINI CON REINTENTO ANTE ERRORES TEMPORALES
 # ==========================================
 def llamar_gemini(client, contents, system_instruction, temperature=1.0, top_p=0.95, top_k=None):
     config_kwargs = {
@@ -222,7 +253,7 @@ st.markdown("""
         color: #A0A0A0; font-size: 0.9rem; font-weight: 500; margin-bottom: 0.2rem;
     }
     .tono-fijo {
-        color: #FFFFFF; font-size: 1rem; font-weight: 600; padding: 0.5rem; 
+        color: #FFFFFF; font-size: 0.9rem; font-weight: 600; padding: 0.5rem; 
         background-color: #16181D; border-radius: 6px; border: 1px solid #2A2D35;
     }
 
@@ -313,12 +344,17 @@ with st.sidebar:
         MI_API_KEY = st.text_input("API Key de Gemini", type="password").strip()
 
     if not MI_GROQ_KEY:
-        st.info("💡 Agrega GROQ_API_KEY para activar Llama 3.3 en la Capa B.")
+        st.info("💡 Agrega GROQ_API_KEY para activar el modo híbrido.")
         MI_GROQ_KEY = st.text_input("API Key de Groq (Opcional)", type="password").strip()
     
     st.markdown('<div class="tono-label">Motor activo:</div>', unsafe_allow_html=True)
     if MI_GROQ_KEY:
-        st.markdown('<div class="tono-fijo">Híbrido: Llama 3.3 + Gemini</div>', unsafe_allow_html=True)
+        try:
+            modelos_disponibles = obtener_modelos_groq_activos(MI_GROQ_KEY)
+            modelo_principal = modelos_disponibles[0] if modelos_disponibles else "No detectado"
+            st.markdown(f'<div class="tono-fijo">Híbrido: {modelo_principal} + Gemini</div>', unsafe_allow_html=True)
+        except Exception:
+            st.markdown('<div class="tono-fijo">Híbrido: Groq (Auto) + Gemini</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="tono-fijo">Solo Gemini (Estándar)</div>', unsafe_allow_html=True)
     
@@ -326,7 +362,7 @@ with st.sidebar:
     usar_retrotraduccion = st.toggle(
         "Capa B: Retrotraducción ES→EN→ES",
         value=True,
-        help="Rompe la distribución estadística de tokens usando Llama 3.3 (si hay clave de Groq) antes de la auditoría final."
+        help="Rompe la distribución estadística de tokens usando Groq antes de la auditoría final."
     )
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -378,12 +414,11 @@ with col_btn1:
         elif not MI_API_KEY:
             st.error("⚠️ Falta la API Key de Gemini.")
         else:
-            motor_texto = "Llama 3.3 (Capa B) + Gemini (Humanizer)" if MI_GROQ_KEY else "Gemini (Capa B + Humanizer)"
-            with st.spinner(f"Procesando con {motor_texto}..."):
+            with st.spinner("Ejecutando Capa A, Capa B multimodelo y auditoría Humanizer..."):
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
 
-                    # 0. CAPA A EN ENTRADA: Limpiar marcas invisibles antes de procesar
+                    # 0. CAPA A EN ENTRADA
                     texto_base, _ = clean_text(texto_original, quotes=True, keep_nbsp=False, strip_dashes=True)
 
                     prompt_en = "Translate the following Spanish text into plain, direct English. Preserve all facts, names, dates, and numbers. Output ONLY the English translation."
@@ -399,17 +434,18 @@ with col_btn1:
                     Devuelve SOLO el texto reescrito.
                     """
 
-                    # 1. CAPA B: RUPTURA ESTADÍSTICA (Llama en Groq con respaldo automático a Gemini)
+                    # 1. CAPA B: RUPTURA ESTADÍSTICA (Groq con auto-detección de modelo + respaldo Gemini)
                     borrador = None
+                    modelo_usado = "Gemini"
                     if MI_GROQ_KEY:
                         try:
                             if usar_retrotraduccion:
-                                texto_en = llamar_llama_groq(MI_GROQ_KEY, prompt_en, texto_base, temperature=0.7)
-                                borrador = llamar_llama_groq(MI_GROQ_KEY, prompt_es, texto_en, temperature=0.95)
+                                texto_en, _ = llamar_groq_dinamico(MI_GROQ_KEY, prompt_en, texto_base, temperature=0.7)
+                                borrador, modelo_usado = llamar_groq_dinamico(MI_GROQ_KEY, prompt_es, texto_en, temperature=0.95)
                             else:
-                                borrador = llamar_llama_groq(MI_GROQ_KEY, prompt_parafrasis, texto_base, temperature=1.0)
+                                borrador, modelo_usado = llamar_groq_dinamico(MI_GROQ_KEY, prompt_parafrasis, texto_base, temperature=1.0)
                         except Exception as e_groq:
-                            st.warning(f"⚠️ Groq falló ({e_groq}). Continuando con Gemini como respaldo.")
+                            st.warning(f"⚠️ Groq no respondió ({e_groq}). Usando Gemini como respaldo.")
                             borrador = None
 
                     if borrador is None:
@@ -448,16 +484,13 @@ with col_btn1:
                         top_k=64,
                     )
                     
-                    # 3. CAPA A EN SALIDA: Limpieza final determinista
+                    # 3. CAPA A EN SALIDA
                     texto_limpio, reporte_limpieza = clean_text(
                         texto_generado, quotes=True, keep_nbsp=False, strip_dashes=True
                     )
                     
                     st.session_state["texto_humanizado"] = texto_limpio
-                    
-                    if reporte_limpieza:
-                        st.toast("🧹 Limpieza Capa A aplicada", icon="✅")
-                    
+                    st.toast(f"✅ Procesado con {modelo_usado} + Gemini", icon="✨")
                     st.rerun() 
                     
                 except Exception as e:
