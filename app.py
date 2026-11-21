@@ -8,6 +8,7 @@ import time
 import json
 import re
 import hmac
+import html as html_lib
 import unicodedata
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
@@ -323,100 +324,247 @@ def auditar_texto(texto):
     metricas["problemas"] = len(problemas)
     return problemas, metricas
 
-# --- CSS PERSONALIZADO ---
+# ==========================================
+# DISEÑO: tokens y estilos (todo color y fuente pasa por :root)
+# Idea: el texto de la máquina entra en la pantalla oscura y sale
+# como una hoja de papel escrita a mano: la pluma del logo deja tinta.
+# ==========================================
 st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:wght@600;700&display=swap');
+<style>
+/* Hallmark · checked: 2026-11-21 · genre: modern-minimal (inferred) · shape: app screen
+ * idea: la salida es una hoja de papel con tinta; la firma es el ritmo de las oraciones
+ * built: the project · redesign: polish */
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap');
 
-    .stApp { background-color: #0F1115; font-family: 'Inter', sans-serif; }
-    h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
-    
-    [data-testid="collapsedControl"] {
-        display: block !important; color: #D97757 !important; 
-        background-color: #1E293B !important; border-radius: 50% !important; padding: 5px !important;
-    }
+:root {
+    --bg: #0F1114;
+    --surface: #171A1F;
+    --surface-2: #20242B;
+    --surface-3: #2A2F38;
+    --ink: #ECEEF1;
+    --ink-soft: #A6ACB6;
+    --accent: #F2552C;          /* naranja del logo: solo la acción principal */
+    --accent-press: #DB4A22;
+    --on-accent: #0F1114;
+    --human: #22D3E6;           /* cian del logo: foco y ritmo del resultado */
+    --paper: #F2F1EC;
+    --paper-ink: #1A1B1E;
+    --paper-soft: #5B5E66;
+    --font-ui: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-page: 'Newsreader', Georgia, 'Times New Roman', serif;
+    --t-sm: 0.8125rem;
+    --t-base: 1rem;
+    --t-md: 1.1875rem;
+    --t-lg: 1.75rem;
+    --t-xl: clamp(2.75rem, 6.5vw, 5.25rem);
+    --r: 4px;
+    --dur-micro: 120ms;
+    --dur-short: 200ms;
+}
 
-    .block-container { padding-top: 2rem !important; }
-    
-    .login-title { font-size: 2rem !important; color: #F5F5F5; text-align: center; margin-bottom: 0.5rem; margin-top: 1rem; }
-    .login-intro { font-size: 1rem; color: #A0A0A0; text-align: center; max-width: 400px; line-height: 1.5; margin: 0 auto 2rem auto; }
+html, body { overflow-x: clip; }
+.stApp { background-color: var(--bg); color: var(--ink); font-family: var(--font-ui); }
+.stApp [data-testid="stMarkdownContainer"],
+.stApp label, .stApp button, .stApp input, .stApp textarea { font-family: var(--font-ui); }
+[data-testid="stHeader"] { background-color: transparent; }
+#MainMenu, footer, [data-testid="stHeaderActionElements"] { display: none; }
 
-    .stTextInput>div>div>input {
-        background-color: #16181D !important; border: 1px solid #2A2D35 !important;
-        color: #FFFFFF !important; border-radius: 8px !important;
-        padding: 0.8rem !important; text-align: center; 
-    }
-    .stTextInput>div>div>input:focus { border-color: #D97757 !important; box-shadow: 0 0 0 1px #D97757 !important; }
-    .stTextInput>label { display: flex; justify-content: center; color: #A0A0A0 !important; }
+.block-container { max-width: 1240px; padding: 2.5rem 2rem 3rem 2rem !important; }
 
-    .header-title { font-size: 2.2rem !important; color: #F5F5F5; margin-bottom: 0.2rem; margin-top: -1rem; }
-    .header-subtitle { font-size: 0.95rem; color: #888888; margin-bottom: 1.5rem; }
-    h4 { font-family: 'Inter', sans-serif !important; color: #E0E0E0 !important; font-weight: 500 !important; font-size: 1rem !important; margin-bottom: 0.5rem !important; letter-spacing: 0.02em; }
+/* ---------- Cabecera de la app ---------- */
+.stApp h1.app-title {
+    font-family: var(--font-ui) !important; font-size: var(--t-lg) !important; font-weight: 600 !important;
+    letter-spacing: -0.02em; line-height: 1.1 !important; color: var(--ink) !important; margin: 0 !important; padding: 0 !important;
+    overflow-wrap: break-word; min-width: 0;
+}
+.stApp p.app-lead { font-size: var(--t-base); color: var(--ink-soft); margin: 0.625rem 0 2.5rem 0 !important; max-width: 60ch; line-height: 1.5; }
 
-    .stTextArea textarea, 
-    .stTextArea textarea:disabled,
-    .stTextArea textarea[disabled] {
-        font-family: 'Inter', sans-serif !important; 
-        font-size: 1rem !important; 
-        line-height: 1.6 !important;
-        background-color: #16181D !important; 
-        border: 1px solid #2A2D35 !important;
-        border-radius: 8px !important; 
-        color: #FFFFFF !important; 
-        -webkit-text-fill-color: #FFFFFF !important;
-        opacity: 1 !important;
-        box-shadow: none !important; 
-        padding: 1.2rem !important;
-    }
-    .stTextArea textarea:focus { border-color: #D97757 !important; box-shadow: 0 0 0 1px #D97757 !important; }
+.panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin: 0 0 0.625rem 0; }
+.panel-title { font-size: var(--t-md); font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
+.panel-meta { font-size: var(--t-sm); color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 
-    .stButton>button {
-        background-color: transparent !important; color: #E0E0E0 !important;
-        font-family: 'Inter', sans-serif; font-weight: 500; font-size: 1rem;
-        border: 1px solid #2A2D35; border-radius: 6px; padding: 0.6rem 2rem;
-        transition: all 0.2s ease; width: 100%;
-    }
-    .stButton>button:hover { border-color: #D97757 !important; color: #D97757 !important; background-color: rgba(217, 119, 87, 0.05) !important; }
+/* ---------- Campo de entrada ---------- */
+[data-testid="stTextArea"] [data-baseweb="textarea"] {
+    background-color: var(--surface) !important; border: 1px solid var(--surface-3) !important;
+    border-radius: var(--r) !important;
+    transition: border-color var(--dur-micro) ease;
+}
+[data-testid="stTextArea"] [data-baseweb="textarea"]:focus-within { border-color: var(--human) !important; }
+[data-testid="stTextArea"] textarea {
+    background-color: var(--surface) !important; color: var(--ink) !important;
+    -webkit-text-fill-color: var(--ink) !important;
+    font-size: var(--t-base) !important; line-height: 1.6 !important; padding: 1.25rem !important;
+    caret-color: var(--human);
+}
+[data-testid="stTextArea"] textarea::placeholder { color: var(--ink-soft); -webkit-text-fill-color: var(--ink-soft); }
+[data-testid="InputInstructions"] { color: var(--ink-soft) !important; }
 
-    .stButton>button[kind="primary"] {
-        background-color: #D97757 !important; color: #FFFFFF !important; border: none !important;
-    }
-    .stButton>button[kind="primary"]:hover { background-color: #c56544 !important; }
+/* ---------- La hoja: resultado ---------- */
+.hoja {
+    height: 400px; overflow-y: auto; box-sizing: border-box;
+    background-color: var(--paper); color: var(--paper-ink);
+    border-radius: var(--r); padding: 1.75rem 2rem;
+}
+.hoja p {
+    font-family: var(--font-page) !important; font-size: 1.125rem; line-height: 1.65;
+    color: var(--paper-ink); margin: 0 0 1em 0; max-width: 68ch;
+}
+.hoja p:last-child { margin-bottom: 0; }
+.hoja.vacia {
+    background-color: var(--surface-2); color: var(--ink-soft);
+    display: flex; flex-direction: column; justify-content: center; padding: 2rem 2.5rem;
+}
+.hoja.vacia .vacia-titulo { font-family: var(--font-page); font-size: 1.5rem; line-height: 1.25; color: var(--ink); margin: 0 0 0.5rem 0; max-width: 22ch; }
+.hoja.vacia .vacia-texto { font-size: var(--t-base); color: var(--ink-soft); margin: 0; max-width: 40ch; line-height: 1.5; }
 
-    [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
-    
-    .tono-label {
-        color: #A0A0A0; font-size: 0.9rem; font-weight: 500; margin-bottom: 0.2rem;
-    }
-    .tono-fijo {
-        color: #FFFFFF; font-size: 0.88rem; font-weight: 600; padding: 0.5rem; 
-        background-color: #16181D; border-radius: 6px; border: 1px solid #2A2D35;
-    }
+/* ---------- Botones ---------- */
+.stButton > button, [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-secondary"] {
+    min-height: 44px; border-radius: var(--r) !important; font-weight: 600;
+    transition: background-color var(--dur-micro) ease, transform var(--dur-micro) ease;
+}
+[data-testid="stBaseButton-primary"] {
+    background-color: var(--accent) !important; color: var(--on-accent) !important; border: 0 !important;
+}
+.stApp .stButton button p, .stApp [data-testid="stFormSubmitButton"] button p { font-size: var(--t-base) !important; font-weight: 600 !important; }
+[data-testid="stBaseButton-primary"] p { color: var(--on-accent) !important; }
+[data-testid="stBaseButton-primary"]:hover { background-color: var(--accent-press) !important; }
+[data-testid="stBaseButton-secondary"] {
+    background-color: var(--surface-2) !important; color: var(--ink) !important; border: 0 !important;
+}
+[data-testid="stBaseButton-secondary"]:hover { background-color: var(--surface-3) !important; color: var(--ink) !important; }
+[data-testid="stBaseButton-primary"]:active, [data-testid="stBaseButton-secondary"]:active { transform: translateY(1px); }
+.stApp button:focus-visible, .stApp input:focus-visible, .stApp textarea:focus-visible, .stApp [role="checkbox"]:focus-visible {
+    outline: 2px solid var(--human) !important; outline-offset: 2px; transition: none;
+}
 
-    #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
+/* ---------- Barra lateral ---------- */
+[data-testid="stSidebar"] { background-color: var(--surface); border-right: 0; }
+[data-testid="stSidebar"] h3 { font-family: var(--font-ui); font-size: var(--t-md); font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
+.motor { background-color: var(--surface-2); border-radius: var(--r); padding: 0.75rem 0.875rem; margin: 0.25rem 0 1.25rem 0; }
+.motor-label { font-size: var(--t-sm); color: var(--ink-soft); margin: 0; }
+.motor-valor { font-size: var(--t-base); color: var(--ink); margin: 0.125rem 0 0 0; font-weight: 500; overflow-wrap: anywhere; }
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { font-size: var(--t-base); color: var(--ink); }
 
-    .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
-    .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
+/* ---------- Avisos, estado y campos de contraseña ---------- */
+[data-testid="stAlert"] { border-radius: var(--r); }
+[data-testid="stExpander"] details, [data-testid="stStatusWidget"] { border-radius: var(--r); }
+[data-testid="stTextInput"] [data-baseweb="input"] {
+    background-color: var(--surface-2) !important; border: 1px solid var(--surface-3) !important; border-radius: var(--r) !important;
+}
+[data-testid="stTextInput"] [data-baseweb="input"]:focus-within { border-color: var(--human) !important; }
+[data-testid="stTextInput"] input { color: var(--ink) !important; background-color: var(--surface-2) !important; padding: 0.75rem 0.875rem !important; font-size: var(--t-base) !important; }
+[data-testid="stTextInput"] label p { color: var(--ink-soft); font-size: var(--t-base); }
 
-    .footer-container {
-        text-align: center; margin-top: 4rem; padding-top: 1.5rem;
-        border-top: 1px solid #1F2228; color: #666; font-size: 0.85rem;
-    }
-    .footer-disclaimer {
-        max-width: 800px; margin: 0 auto 1rem auto;
-        color: #888; font-size: 0.8rem; line-height: 1.5; font-style: italic;
-    }
-    .footer-copyright { color: #FFFFFF; opacity: 0.8; font-size: 0.8rem; }
+/* ---------- Ritmo de oraciones (firma de la app) ---------- */
+.ritmo { background-color: var(--surface); border-radius: var(--r); padding: 1.75rem 2rem; margin-top: 2.5rem; }
+.stApp h2.ritmo-titulo { font-family: var(--font-ui) !important; font-size: var(--t-md) !important; font-weight: 600 !important; color: var(--ink) !important; margin: 0 0 0.25rem 0 !important; padding: 0 !important; letter-spacing: -0.01em; line-height: 1.3 !important; }
+.stApp p.ritmo-intro { font-size: var(--t-base); color: var(--ink-soft); margin: 0.25rem 0 1.5rem 0 !important; max-width: 70ch; line-height: 1.5; }
+.ritmo-fila { display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: 2rem; align-items: end; padding: 0.875rem 0; }
+.ritmo-fila + .ritmo-fila { background-color: transparent; }
+.ritmo-nombre { font-size: var(--t-base); color: var(--ink); margin: 0; font-weight: 500; }
+.ritmo-dato { font-size: var(--t-sm); color: var(--ink-soft); margin: 0.125rem 0 0 0; font-variant-numeric: tabular-nums; }
+.ritmo svg { display: block; max-width: 100%; height: auto; }
+.barra-orig { fill: var(--ink-soft); opacity: 0.55; }
+.barra-hum { fill: var(--human); }
+.pendientes { margin: 1.25rem 0 0 0; padding: 1.25rem 0 0 0; }
+.pendientes-titulo { font-size: var(--t-base); font-weight: 600; color: var(--ink); margin: 0 0 0.5rem 0; }
+.pendientes ul { margin: 0; padding-left: 1.1rem; }
+.pendientes li { color: var(--ink-soft); font-size: var(--t-base); line-height: 1.5; margin: 0 0 0.375rem 0; }
+.sin-pendientes { font-size: var(--t-base); color: var(--ink-soft); margin: 1.25rem 0 0 0; }
 
-    @media (max-width: 768px) {
-        .header-title { font-size: 1.8rem !important; }
-        .stButton>button { padding: 0.8rem; font-size: 1rem; }
-        .login-title { font-size: 1.6rem !important; }
-    }
-    </style>
+/* ---------- Ingreso ---------- */
+.stApp h1.ingreso-marca { font-family: var(--font-ui) !important; font-size: var(--t-xl) !important; font-weight: 600 !important; letter-spacing: -0.04em; line-height: 0.95 !important; color: var(--ink) !important; margin: 1.5rem 0 0 0 !important; padding: 0 !important; overflow-wrap: break-word; min-width: 0; }
+.stApp p.ingreso-lead { font-size: var(--t-md); color: var(--ink-soft); line-height: 1.5; margin: 2rem 0 0 0 !important; max-width: 34ch; }
+.ingreso-espacio { height: 9vh; }
+.ingreso-form-titulo { font-size: var(--t-md); font-weight: 600; color: var(--ink); margin: 0 0 0.25rem 0; }
+.stApp p.ingreso-form-texto { font-size: var(--t-base); color: var(--ink-soft); margin: 0.25rem 0 1rem 0 !important; }
+.ingreso-form-pad { height: 9.5rem; }
+
+/* ---------- Pie ---------- */
+.pie { display: flex; justify-content: space-between; align-items: flex-end; gap: 2rem; flex-wrap: wrap; margin-top: 6rem; padding-top: 2rem; }
+.pie-aviso { font-size: var(--t-sm); color: var(--ink-soft); line-height: 1.55; max-width: 62ch; margin: 0; }
+.pie-firma { text-align: right; margin: 0; }
+.pie-firma p { font-size: var(--t-sm); color: var(--ink-soft); margin: 0; }
+.pie-firma .pie-autor { font-size: var(--t-base); color: var(--ink); font-weight: 500; }
+
+@media (max-width: 768px) {
+    .block-container { padding: 1.5rem 1rem 2rem 1rem !important; }
+    .hoja { height: 340px; padding: 1.25rem 1.25rem; }
+    .ritmo { padding: 1.25rem; }
+    .ritmo-fila { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+    .pie { flex-direction: column; align-items: flex-start; }
+    .pie-firma { text-align: left; }
+    .ingreso-espacio { height: 3vh; }
+    .ingreso-form-pad { height: 1rem; }
+    .ritmo svg { margin-top: 0.5rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .stApp *, .stApp *::before, .stApp *::after { transition: none !important; animation: none !important; }
+}
+</style>
 """, unsafe_allow_html=True)
 
-# --- 1. SEGURIDAD Y PANTALLA DE BIENVENIDA ---
+LOGO_URL = "https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png"
+
+PIE_HTML = """
+<div class="pie">
+    <p class="pie-aviso">Humanizador Pro es una herramienta de apoyo para pulir la redacción de textos. Los resultados deben ser revisados y validados por el usuario, quien asume la responsabilidad total sobre el contenido final y el uso que le dé.</p>
+    <div class="pie-firma">
+        <p class="pie-autor">Elaborado por Manu</p>
+        <p>®Humanizadormanu, derechos reservados © 2026</p>
+    </div>
+</div>
+"""
+
+
+def contar_palabras(texto):
+    return len(re.findall(r"\S+", texto or ""))
+
+
+def html_hoja(texto):
+    """El resultado como hoja de papel, con sus párrafos."""
+    if not texto:
+        return (
+            '<div class="hoja vacia" role="region" aria-label="Texto humanizado">'
+            '<p class="vacia-titulo">Aquí aparece tu texto reescrito.</p>'
+            '<p class="vacia-texto">Pega un texto a la izquierda y pulsa Refinar texto. '
+            'El resultado queda en esta hoja, listo para copiar.</p></div>'
+        )
+    parrafos = [p.strip() for p in re.split(r"\n\s*\n|\n", texto) if p.strip()]
+    cuerpo = "".join(f"<p>{html_lib.escape(p)}</p>" for p in parrafos)
+    return f'<div class="hoja" role="region" aria-label="Texto humanizado" tabindex="0">{cuerpo}</div>'
+
+
+def svg_ritmo(texto, clase):
+    """Una barra por oración; la altura es su número de palabras."""
+    largos = [len(o.split()) for o in dividir_oraciones(texto)][:70]
+    if not largos:
+        return ""
+    paso = max(14, min(48, 860 // len(largos)))
+    ancho, alto = round(paso * 0.68), 96
+    barras = []
+    for i, n in enumerate(largos):
+        h = max(4, round(min(n, 45) / 45 * (alto - 4)))
+        barras.append(f'<rect class="{clase}" x="{i * paso}" y="{alto - h}" width="{ancho}" height="{h}" rx="1"></rect>')
+    total = len(largos) * paso
+    etiqueta = f"Largo de cada oración: {', '.join(map(str, largos))} palabras"
+    return (f'<svg width="{total}" height="{alto}" viewBox="0 0 {total} {alto}" role="img" '
+            f'aria-label="{etiqueta}">{"".join(barras)}</svg>')
+
+
+def fila_ritmo(nombre, texto, clase):
+    _, m = auditar_texto(texto)
+    n = m.get("oraciones", 0)
+    cv = m.get("variacion_ritmo", 0.0)
+    lectura = "ritmo parejo" if cv < 0.40 else "ritmo variado"
+    dato = f"{n} oraciones, variación {str(cv).replace('.', ',')}, {lectura}"
+    return (f'<div class="ritmo-fila"><div><p class="ritmo-nombre">{nombre}</p>'
+            f'<p class="ritmo-dato">{dato}</p></div>{svg_ritmo(texto, clase)}</div>')
+
+
+# ==========================================
+# 1. INGRESO
+# ==========================================
 def check_password():
     def verify_password():
         # Usa APP_PASSWORD de Secretos si existe; si no, la clave es "manu2026"
@@ -428,133 +576,114 @@ def check_password():
         else:
             st.session_state["password_correct"] = False
 
-    if not st.session_state.get("password_correct"):
-        col_izq, col_centro, col_der = st.columns([1, 2, 1])
-        with col_centro:
-            col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
-            with col_logo_centro:
-                st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width="stretch")
+    if st.session_state.get("password_correct"):
+        return True
 
-            st.markdown("""
-                <div class="login-title">Humanizador Pro</div>
-                <div class="login-intro">
-                    Bienvenido. Esta herramienta transforma textos generados por IA en textos naturales, auténticos y con verdadera voz humana.
-                </div>
-            """, unsafe_allow_html=True)
+    st.markdown('<div class="ingreso-espacio"></div>', unsafe_allow_html=True)
+    col_marca, col_form = st.columns([7, 5], gap="large")
+    with col_marca:
+        st.image(LOGO_URL, width=88)
+        st.markdown(
+            '<h1 class="ingreso-marca">Humanizador Pro</h1>'
+            '<p class="ingreso-lead">Convierte un texto generado por IA en prosa natural, '
+            'con ritmo y voz de persona.</p>',
+            unsafe_allow_html=True,
+        )
+    with col_form:
+        st.markdown('<div class="ingreso-form-pad"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="ingreso-form-titulo">Ingresar</p>'
+            '<p class="ingreso-form-texto">Escribe la contraseña para usar la herramienta.</p>',
+            unsafe_allow_html=True,
+        )
+        with st.form("form_ingreso", border=False):
+            st.text_input("Contraseña", type="password", key="password_input")
+            st.form_submit_button("Ingresar", on_click=verify_password, type="primary", width="stretch")
+        if st.session_state.get("password_correct") is False:
+            st.error("La contraseña no coincide. Intenta de nuevo.")
 
-            st.text_input("Ingresa la contraseña para acceder", type="password", key="password_input")
-            st.button("Ingresar", on_click=verify_password, width="stretch", type="primary")
-
-            if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-                st.error("😕 Contraseña incorrecta. Intenta de nuevo.")
-
-        st.markdown("""
-            <div class="footer-container">
-                <div class="footer-disclaimer">
-                    Humanizador Pro es una herramienta de apoyo diseñada para optimizar y pulir la redacción de textos. Los resultados generados deben ser revisados y validados por el usuario, quien asume la responsabilidad total sobre el contenido final y el uso que le dé.
-                </div>
-                <div class="footer-copyright">®Humanizadormanu derechos reservados © 2026</div>
-            </div>
-        """, unsafe_allow_html=True)
-        return False
-    return True
+    st.markdown(PIE_HTML, unsafe_allow_html=True)
+    return False
 
 if not check_password():
     st.stop()
 
 # ==========================================
-# A PARTIR DE AQUÍ ES LA APP NORMAL
+# 2. BARRA LATERAL: CONFIGURACIÓN
 # ==========================================
-
-st.markdown('<div class="signature-container"><div class="signature-text">Elaborado por Manu</div></div>', unsafe_allow_html=True)
-
 with st.sidebar:
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
-    with col_logo_centro:
-        st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=100)
-
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.image(LOGO_URL, width=56)
     st.markdown("### Configuración")
 
     if not MI_API_KEY:
-        st.warning("⚠️ Falta GEMINI_API_KEY en Secretos.")
-        MI_API_KEY = st.text_input("API Key de Gemini", type="password").strip()
+        st.warning("Falta GEMINI_API_KEY en Secretos. Puedes pegarla aquí.")
+        MI_API_KEY = st.text_input("API key de Gemini", type="password").strip()
 
     if not MI_GROQ_KEY:
-        st.info("💡 Agrega GROQ_API_KEY para activar el modo híbrido.")
-        MI_GROQ_KEY = st.text_input("API Key de Groq (Opcional)", type="password").strip()
+        st.info("Agrega GROQ_API_KEY para activar el modo híbrido.")
+        MI_GROQ_KEY = st.text_input("API key de Groq (opcional)", type="password").strip()
 
     solo_groq = False
     if MI_GROQ_KEY:
         solo_groq = st.toggle(
-            "Modo Solo Groq (Ahorrar cuota Gemini)",
+            "Usar solo Groq",
             value=True,
-            help="Usa Groq para todo el flujo y evita el límite diario de Gemini. Gemini queda solo como respaldo.",
+            help="Ahorra la cuota diaria de Gemini. Gemini queda solo como respaldo.",
         )
 
-    st.markdown('<div class="tono-label">Flujo activo:</div>', unsafe_allow_html=True)
     if MI_GROQ_KEY:
         try:
             modelos_disponibles = obtener_modelos_groq_activos(MI_GROQ_KEY)
-            modelo_principal = modelos_disponibles[0] if modelos_disponibles else "Groq Auto"
-            if solo_groq:
-                st.markdown(f'<div class="tono-fijo">Solo Groq ({modelo_principal})</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="tono-fijo">Gemini → {modelo_principal}</div>', unsafe_allow_html=True)
+            modelo_principal = modelos_disponibles[0] if modelos_disponibles else "Groq automático"
         except Exception:
-            st.markdown('<div class="tono-fijo">Groq (Auto) + Gemini</div>', unsafe_allow_html=True)
+            modelo_principal = "Groq automático"
+        motor = f"Groq ({modelo_principal})" if solo_groq else f"Gemini y Groq ({modelo_principal})"
     else:
-        st.markdown('<div class="tono-fijo">Solo Gemini (Estándar)</div>', unsafe_allow_html=True)
+        motor = "Gemini"
+    st.markdown(
+        f'<div class="motor"><p class="motor-label">Motor en uso</p>'
+        f'<p class="motor-valor">{html_lib.escape(motor)}</p></div>',
+        unsafe_allow_html=True,
+    )
 
-    st.markdown("<br>", unsafe_allow_html=True)
     usar_retrotraduccion = st.toggle(
-        "Capa B: Retrotraducción ES→EN→ES",
+        "Retrotraducción español, inglés, español",
         value=True,
-        help="Desconstruye el texto vía inglés antes de la redacción final.",
+        help="Capa B: desarma el texto pasándolo por el inglés antes de la redacción final.",
     )
     usar_auditoria = st.toggle(
-        "Capa C: Auditoría y corrección automática",
+        "Revisión y corrección automática",
         value=True,
-        help="Revisa el resultado (ritmo, muletillas, enumeraciones, gerundios, cierre) y lo corrige hasta 2 veces.",
+        help="Capa C: revisa ritmo, muletillas, enumeraciones, gerundios y cierre, y corrige hasta 2 veces.",
     )
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    if st.button("Cerrar Sesión"):
+    st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
+    if st.button("Cerrar sesión", width="stretch"):
         st.session_state.pop("password_correct", None)
         st.rerun()
 
-st.markdown('<div class="header-title">Humanizador de Textos</div>', unsafe_allow_html=True)
-st.markdown('<div class="header-subtitle">Refina textos generados por IA para darles una voz auténticamente humana.</div>', unsafe_allow_html=True)
-
+# ==========================================
+# 3. PANTALLA PRINCIPAL
+# ==========================================
 st.session_state.setdefault("texto_humanizado", "")
+st.session_state.setdefault("texto_fuente", "")
 st.session_state.setdefault("avisos", [])
 st.session_state.setdefault("auditoria", None)
 
 def limpiar_textos():
     st.session_state["texto_humanizado"] = ""
+    st.session_state["texto_fuente"] = ""
     st.session_state["input_original_key"] = ""
     st.session_state["avisos"] = []
     st.session_state["auditoria"] = None
 
-col1, col2 = st.columns(2, gap="medium")
+st.markdown(
+    '<h1 class="app-title">Humanizador de textos</h1>'
+    '<p class="app-lead">Pega un texto generado por IA y recíbelo reescrito con ritmo, '
+    'vocabulario y estructura de persona.</p>',
+    unsafe_allow_html=True,
+)
 
-with col1:
-    st.markdown("#### Texto Original")
-    texto_original = st.text_area(
-        "Pega tu texto aquí:", height=400, label_visibility="collapsed",
-        max_chars=5000, key="input_original_key",
-    )
-
-with col2:
-    st.markdown("#### Texto Humanizado")
-    st.text_area(
-        "Resultado:", value=st.session_state["texto_humanizado"], height=400,
-        disabled=True, label_visibility="collapsed",
-    )
-
-st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
 # PROMPTS
@@ -626,94 +755,134 @@ def generar(system_prompt, texto, temperature, preferir, client, avisos):
     raise RuntimeError(" | ".join(errores) or "No hay ningún proveedor configurado.")
 
 
-col_btn1, col_btn2 = st.columns([3, 1])
 
-with col_btn1:
-    if st.button("Refinar Texto", width="stretch", type="primary"):
+def procesar(texto_original, estado):
+    """Corre todo el flujo y devuelve (texto_final, modelo, avisos, auditoria, texto_base)."""
+    avisos = []
+    client = genai.Client(api_key=MI_API_KEY) if MI_API_KEY else None
+    pref_b = "groq" if (solo_groq or client is None) else "gemini"
+
+    estado.update(label="Limpiando caracteres ocultos y formato")
+    texto_base, _ = clean_text(texto_original)
+
+    if usar_retrotraduccion:
+        estado.update(label="Pasando el texto al inglés")
+        texto_en, _ = generar(PROMPT_EN, texto_base, 0.7, pref_b, client, avisos)
+        estado.update(label="Volviendo al español con otra estructura")
+        borrador, _ = generar(PROMPT_ES, texto_en, 0.9, pref_b, client, avisos)
+    else:
+        estado.update(label="Reordenando cláusulas y conectores")
+        borrador, _ = generar(PROMPT_PARAFRASIS, texto_base, 0.95, pref_b, client, avisos)
+
+    estado.update(label="Redactando la versión final")
+    pref_final = "groq" if MI_GROQ_KEY else "gemini"
+    texto_generado, modelo_final = generar(PROMPT_FINAL, borrador, 1.0, pref_final, client, avisos)
+    texto_generado, _ = clean_text(texto_generado)
+
+    problemas_iniciales, _ = auditar_texto(texto_generado)
+    if usar_auditoria:
+        for ronda in range(2):
+            problemas, _ = auditar_texto(texto_generado)
+            if not problemas:
+                break
+            estado.update(label=f"Corrigiendo {len(problemas)} punto(s) detectados en la revisión")
+            lista = "\n".join(f"- {p}" for p in problemas)
+            try:
+                corregido, _ = generar(
+                    PROMPT_CORRECCION,
+                    f"PROBLEMAS DETECTADOS:\n{lista}\n\nTEXTO:\n{texto_generado}",
+                    0.8, pref_final, client, avisos,
+                )
+            except Exception as e_corr:
+                avisos.append(f"No se pudo hacer la corrección automática ({e_corr}).")
+                break
+            corregido, _ = clean_text(corregido)
+            nuevos, _ = auditar_texto(corregido)
+            if len(nuevos) < len(problemas) and len(corregido) > 0.7 * len(texto_generado):
+                texto_generado = corregido
+            else:
+                break
+
+    texto_limpio, _ = clean_text(texto_generado)
+    problemas_finales, metricas = auditar_texto(texto_limpio)
+    auditoria = {"antes": len(problemas_iniciales), "despues": problemas_finales, "metricas": metricas}
+    return texto_limpio, modelo_final, avisos, auditoria, texto_base
+
+
+col1, col2 = st.columns(2, gap="large")
+
+with col1:
+    actual = st.session_state.get("input_original_key", "")
+    st.markdown(
+        f'<div class="panel-head"><span class="panel-title">Texto original</span>'
+        f'<span class="panel-meta">{contar_palabras(actual)} palabras</span></div>',
+        unsafe_allow_html=True,
+    )
+    texto_original = st.text_area(
+        "Texto original", height=400, label_visibility="collapsed",
+        max_chars=5000, key="input_original_key",
+        placeholder="Pega aquí el texto que quieres reescribir.",
+    )
+    col_btn1, col_btn2 = st.columns([3, 1], gap="small")
+    with col_btn1:
+        refinar = st.button("Refinar texto", width="stretch", type="primary")
+    with col_btn2:
+        st.button("Limpiar", on_click=limpiar_textos, width="stretch")
+
+    if refinar:
         if not texto_original.strip():
-            st.warning("Por favor, pega un texto primero.")
+            st.warning("Pega un texto primero.")
         elif not MI_API_KEY and not MI_GROQ_KEY:
-            st.error("⚠️ Falta configurar al menos una API Key (Gemini o Groq).")
+            st.error("Falta configurar al menos una API key (Gemini o Groq) en la barra lateral.")
         else:
-            avisos = []
-            with st.spinner("Desconstruyendo, redactando y auditando el texto..."):
+            with st.status("Preparando", expanded=False) as estado:
                 try:
-                    client = genai.Client(api_key=MI_API_KEY) if MI_API_KEY else None
-                    pref_b = "groq" if (solo_groq or client is None) else "gemini"
-
-                    # 0. CAPA A EN ENTRADA
-                    texto_base, _ = clean_text(texto_original)
-
-                    # 1. CAPA B: retrotraducción o paráfrasis
-                    if usar_retrotraduccion:
-                        texto_en, _ = generar(PROMPT_EN, texto_base, 0.7, pref_b, client, avisos)
-                        borrador, _ = generar(PROMPT_ES, texto_en, 0.9, pref_b, client, avisos)
-                    else:
-                        borrador, _ = generar(PROMPT_PARAFRASIS, texto_base, 0.95, pref_b, client, avisos)
-
-                    # 2. REDACCIÓN FINAL (Groq primero si existe: mezclar modelos rompe patrones)
-                    pref_final = "groq" if MI_GROQ_KEY else "gemini"
-                    texto_generado, modelo_final = generar(PROMPT_FINAL, borrador, 1.0, pref_final, client, avisos)
-                    texto_generado, _ = clean_text(texto_generado)
-
-                    # 3. CAPA C: auditoría en código + corrección puntual (máx. 2 rondas)
-                    problemas_iniciales, _ = auditar_texto(texto_generado)
-                    if usar_auditoria:
-                        for ronda in range(2):
-                            problemas, _ = auditar_texto(texto_generado)
-                            if not problemas:
-                                break
-                            lista = "\n".join(f"- {p}" for p in problemas)
-                            try:
-                                corregido, _ = generar(
-                                    PROMPT_CORRECCION,
-                                    f"PROBLEMAS DETECTADOS:\n{lista}\n\nTEXTO:\n{texto_generado}",
-                                    0.8, pref_final, client, avisos,
-                                )
-                            except Exception as e_corr:
-                                avisos.append(f"⚠️ No se pudo hacer la corrección automática ({e_corr}).")
-                                break
-                            corregido, _ = clean_text(corregido)
-                            # Solo se acepta si mejora y no recorta demasiado el texto
-                            nuevos, _ = auditar_texto(corregido)
-                            if len(nuevos) < len(problemas) and len(corregido) > 0.7 * len(texto_generado):
-                                texto_generado = corregido
-                            else:
-                                break
-
-                    # 4. CAPA A EN SALIDA
-                    texto_limpio, _ = clean_text(texto_generado)
-                    problemas_finales, metricas = auditar_texto(texto_limpio)
-
+                    texto_limpio, modelo_final, avisos, auditoria, texto_base = procesar(texto_original, estado)
+                except Exception as e:
+                    estado.update(label="No se pudo terminar", state="error")
+                    st.error(f"Algo falló al procesar el texto: {e}")
+                else:
+                    estado.update(label="Listo", state="complete")
                     st.session_state["texto_humanizado"] = texto_limpio
+                    st.session_state["texto_fuente"] = texto_base
                     st.session_state["avisos"] = avisos
-                    st.session_state["auditoria"] = {
-                        "antes": len(problemas_iniciales),
-                        "despues": problemas_finales,
-                        "metricas": metricas,
-                    }
-                    st.toast(f"✅ Procesado con {modelo_final}", icon="✨")
+                    st.session_state["auditoria"] = auditoria
+                    st.toast(f"Listo. Procesado con {modelo_final}.")
                     st.rerun()
 
-                except Exception as e:
-                    st.error(f"Error técnico detallado: {e}")
+with col2:
+    resultado = st.session_state["texto_humanizado"]
+    meta = f"{contar_palabras(resultado)} palabras" if resultado else "Sin resultado todavía"
+    st.markdown(
+        f'<div class="panel-head"><span class="panel-title">Texto humanizado</span>'
+        f'<span class="panel-meta">{meta}</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(html_hoja(resultado), unsafe_allow_html=True)
 
-with col_btn2:
-    st.button("Limpiar Textos", on_click=limpiar_textos, width="stretch")
-
-for aviso in st.session_state["avisos"]:
-    st.warning(aviso)
-
-if st.session_state["texto_humanizado"]:
-    # Escapa "</" para que un texto con "</script>" no rompa el HTML del botón
-    texto_json = json.dumps(st.session_state["texto_humanizado"]).replace("</", "<\\/")
-    html_boton = f"""
-        <button id="copyBtn" style="
-            background-color: transparent; border: 1px solid #D97757; color: #D97757;
-            padding: 10px 16px; border-radius: 6px; cursor: pointer;
-            font-family: 'Inter', sans-serif; font-size: 0.95rem; width: 100%;
-            transition: all 0.2s ease;
-        ">📋 Copiar Texto Humanizado</button>
+    if resultado:
+        # Escapa "</" para que un texto con "</script>" no rompa el HTML del botón
+        texto_json = json.dumps(resultado).replace("</", "<\\/")
+        html_boton = f"""
+        <style>
+        :root {{
+            --surface-2: #20242B; --surface-3: #2A2F38; --ink: #ECEEF1; --human: #22D3E6;
+            --font-ui: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+        }}
+        html, body {{ margin: 0; padding: 0; overflow: clip; background-color: transparent; }}
+        #copyBtn {{
+            box-sizing: border-box; width: 100%; height: 44px; margin-top: 12px;
+            background-color: var(--surface-2); color: var(--ink); border: 0; border-radius: 4px;
+            font-family: var(--font-ui); font-size: 16px; font-weight: 600; cursor: pointer;
+            transition: background-color 120ms ease, transform 120ms ease;
+        }}
+        #copyBtn:hover {{ background-color: var(--surface-3); }}
+        #copyBtn:active {{ transform: translateY(1px); }}
+        #copyBtn:focus-visible {{ outline: 2px solid var(--human); outline-offset: 2px; transition: none; }}
+        #copyBtn.ok {{ color: var(--human); }}
+        @media (prefers-reduced-motion: reduce) {{ #copyBtn {{ transition: none; }} }}
+        </style>
+        <button id="copyBtn" type="button">Copiar texto humanizado</button>
         <script>
         const btn = document.getElementById('copyBtn');
         btn.addEventListener('click', function() {{
@@ -725,43 +894,51 @@ if st.session_state["texto_humanizado"]:
                 ta.value = text; document.body.appendChild(ta); ta.select();
                 document.execCommand('copy'); document.body.removeChild(ta);
             }}).then(function() {{
-                btn.innerHTML = '✅ ¡Copiado!';
-                btn.style.borderColor = '#4CAF50'; btn.style.color = '#4CAF50';
-                setTimeout(() => {{
-                    btn.innerHTML = '📋 Copiar Texto Humanizado';
-                    btn.style.borderColor = '#D97757'; btn.style.color = '#D97757';
+                btn.textContent = 'Copiado'; btn.classList.add('ok');
+                setTimeout(function() {{
+                    btn.textContent = 'Copiar texto humanizado'; btn.classList.remove('ok');
                 }}, 2000);
             }});
         }});
         </script>
         """
-    # st.iframe reemplaza a components.html en Streamlit nuevo; se mantiene respaldo para versiones viejas
-    if hasattr(st, "iframe"):
-        st.iframe(html_boton, height=70)
+        # st.iframe reemplaza a components.html en Streamlit nuevo; respaldo para versiones viejas
+        if hasattr(st, "iframe"):
+            st.iframe(html_boton, height=60)
+        else:
+            components.html(html_boton, height=60)
+
+for aviso in st.session_state["avisos"]:
+    st.warning(aviso)
+
+# ==========================================
+# 4. RITMO DE ORACIONES Y REVISIÓN
+# ==========================================
+aud = st.session_state.get("auditoria")
+if st.session_state["texto_humanizado"] and aud:
+    pendientes = aud["despues"]
+    if pendientes:
+        items = "".join(f"<li>{html_lib.escape(p)}</li>" for p in pendientes)
+        bloque_pendientes = (
+            f'<div class="pendientes"><p class="pendientes-titulo">'
+            f'Quedan {len(pendientes)} punto(s) para revisar a mano</p><ul>{items}</ul></div>'
+        )
     else:
-        components.html(html_boton, height=70)
+        hecho = (f"La revisión corrigió {aud['antes']} punto(s) y no quedan pendientes."
+                 if aud["antes"] else "La revisión no encontró puntos pendientes.")
+        bloque_pendientes = (
+            f'<p class="sin-pendientes">{hecho} Igual conviene leerlo y cambiar alguna frase con tus palabras.</p>'
+        )
+    fuente = st.session_state.get("texto_fuente", "")
+    filas = (fila_ritmo("Original", fuente, "barra-orig") if fuente else "") + \
+        fila_ritmo("Humanizado", st.session_state["texto_humanizado"], "barra-hum")
+    st.markdown(
+        '<section class="ritmo" aria-labelledby="ritmo-titulo">'
+        '<h2 class="ritmo-titulo" id="ritmo-titulo">Ritmo de las oraciones</h2>'
+        '<p class="ritmo-intro">Cada barra es una oración y su altura es el número de palabras. '
+        'Un texto generado suele tener barras parejas; uno escrito por una persona sube y baja.</p>'
+        f'{filas}{bloque_pendientes}</section>',
+        unsafe_allow_html=True,
+    )
 
-    aud = st.session_state.get("auditoria")
-    if aud:
-        pendientes = aud["despues"]
-        titulo = ("🔎 Auditoría: sin problemas pendientes" if not pendientes
-                  else f"🔎 Auditoría: {len(pendientes)} punto(s) para revisar a mano")
-        with st.expander(titulo):
-            m = aud["metricas"]
-            st.markdown(
-                f"Problemas antes de corregir: **{aud['antes']}** · después: **{len(pendientes)}** · "
-                f"oraciones: **{m.get('oraciones', 0)}** · variación de ritmo: **{m.get('variacion_ritmo', 0)}** "
-                "(sobre 0.40 es un ritmo natural)"
-            )
-            for p in pendientes:
-                st.markdown(f"- {p}")
-            st.caption("Ningún detector es infalible. Leer el texto y ajustarlo con tus propias palabras sigue siendo lo que más ayuda.")
-
-st.markdown("""
-    <div class="footer-container">
-        <div class="footer-disclaimer">
-            Humanizador Pro es una herramienta de apoyo diseñada para optimizar y pulir la redacción de textos. Los resultados generados deben ser revisados y validados por el usuario, quien asume la responsabilidad total sobre el contenido final y el uso que le dé.
-        </div>
-        <div class="footer-copyright">®Humanizadormanu derechos reservados © 2026</div>
-    </div>
-""", unsafe_allow_html=True)
+st.markdown(PIE_HTML, unsafe_allow_html=True)
