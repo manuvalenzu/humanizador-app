@@ -88,8 +88,12 @@ def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.0):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
+    # La respuesta mide más o menos lo mismo que el texto a reescribir; se deja margen.
+    # Sin este tope, Groq reserva miles de tokens de salida y rechaza el pedido por tamaño.
+    max_salida = max(1500, min(8000, len(user_text) // 3 + 800))
+
     ultimo_error = ""
-    for modelo in modelos[:3]:
+    for modelo in modelos[:4]:
         payload = {
             "model": modelo,
             "messages": [
@@ -100,8 +104,9 @@ def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.0):
             "top_p": 0.95,
             "frequency_penalty": 0.25,
             "presence_penalty": 0.2,
+            "max_tokens": max_salida,
         }
-        for intento in range(2):
+        for intento in range(3):
             try:
                 resp = requests.post(url, headers=headers, json=payload, timeout=120)
             except requests.RequestException as e:
@@ -112,6 +117,15 @@ def llamar_groq_dinamico(api_key, system_prompt, user_text, temperature=1.0):
                 payload.pop("frequency_penalty", None)
                 payload.pop("presence_penalty", None)
                 continue
+            # Límite por minuto: si Groq pide esperar poco, espera y reintenta el mismo modelo
+            if resp.status_code == 429 and intento < 2:
+                try:
+                    espera = float(resp.headers.get("retry-after", "0"))
+                except (TypeError, ValueError):
+                    espera = 0
+                if 0 < espera <= 25:
+                    time.sleep(espera + 0.5)
+                    continue
             if resp.status_code == 200:
                 try:
                     contenido = resp.json()["choices"][0]["message"].get("content") or ""
@@ -935,6 +949,25 @@ def generar(system_prompt, texto, temperature, preferir, client, avisos):
 
 
 
+def explicar_error(e):
+    """Traduce el error técnico a una explicación y una acción concreta."""
+    t = str(e)
+    bajo = t.lower()
+    if "413" in t or "request too large" in bajo or "too large" in bajo or "context_length" in bajo:
+        causa = ("El texto es demasiado largo para el plan gratuito de Groq en una sola solicitud. "
+                 "Prueba con un texto más corto o divídelo en dos partes.")
+    elif "429" in t or "rate_limit" in bajo or "rate limit" in bajo or "resource_exhausted" in bajo:
+        causa = ("Se agotó la cuota por minuto o por día del proveedor. Espera un minuto y vuelve a intentarlo. "
+                 "Si sigue, la cuota diaria se renueva mañana.")
+    elif "401" in t or "invalid api key" in bajo or "api_key_invalid" in bajo or "unauthorized" in bajo:
+        causa = "Una API key no es válida. Revísala en los Secretos de Streamlit."
+    elif "timed out" in bajo or "timeout" in bajo or "sin respuesta" in bajo:
+        causa = "El proveedor tardó demasiado en responder. Vuelve a intentarlo en un momento."
+    else:
+        causa = "Ocurrió un error inesperado al procesar el texto."
+    return causa, t[:600]
+
+
 def procesar(texto_original, estado):
     """Corre todo el flujo y devuelve (texto_final, modelo, avisos, auditoria, texto_base)."""
     avisos = []
@@ -963,7 +996,7 @@ def procesar(texto_original, estado):
     # CAPA DE DESTRUCCIÓN DE ESTRUCTURA: más párrafos, más cortos, oraciones de largo extremo
     if partir:
         estado.update(label="Rompiendo la estructura de párrafos y oraciones")
-        entrada_estructura = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido):\n{texto_base}\n\nTEXTO A REESTRUCTURAR:\n{borrador}"
+        entrada_estructura = f"{medida}\n\nTEXTO A REESTRUCTURAR:\n{borrador}"
         try:
             reestructurado, _ = generar(PROMPT_ESTRUCTURA, entrada_estructura, 0.85, pref_final, client, avisos)
             reestructurado, _ = clean_text(reestructurado)
@@ -1047,12 +1080,13 @@ with col1:
         elif not MI_API_KEY and not MI_GROQ_KEY:
             st.error("Falta configurar al menos una API key (Gemini o Groq) en la barra lateral.")
         else:
+            error_proceso = None
             with st.status("Preparando", expanded=False) as estado:
                 try:
                     texto_limpio, modelo_final, avisos, auditoria, texto_base = procesar(texto_original, estado)
                 except Exception as e:
+                    error_proceso = e
                     estado.update(label="No se pudo terminar", state="error")
-                    st.error(f"Algo falló al procesar el texto: {e}")
                 else:
                     estado.update(label="Listo", state="complete")
                     st.session_state["texto_humanizado"] = texto_limpio
@@ -1061,6 +1095,11 @@ with col1:
                     st.session_state["auditoria"] = auditoria
                     st.toast(f"Listo. Procesado con {modelo_final}.")
                     st.rerun()
+            if error_proceso is not None:
+                causa, detalle = explicar_error(error_proceso)
+                st.error(causa)
+                with st.expander("Ver detalle técnico"):
+                    st.code(detalle, language=None)
 
 with col2:
     resultado = st.session_state["texto_humanizado"]
