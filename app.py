@@ -3,6 +3,10 @@ from google import genai
 from google.genai import types
 import streamlit.components.v1 as components
 import json
+import re
+import unicodedata
+import io
+import os
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wide")
@@ -15,6 +19,76 @@ try:
 except Exception:
     MI_API_KEY = None
 
+# ==========================================
+# LÓGICA DE LIMPIEZA (Basada en clean_marks.py)
+# ==========================================
+INVISIBLE = {
+    0x200B: "zero width space", 0x200C: "zero width non-joiner", 0x200D: "zero width joiner",
+    0x200E: "left-to-right mark", 0x200F: "right-to-left mark", 0x2060: "word joiner",
+    0x2061: "function application", 0x2062: "invisible times", 0x2063: "invisible separator",
+    0x2064: "invisible plus", 0xFEFF: "BOM / zero width no-break space", 0x00AD: "soft hyphen",
+    0x061C: "arabic letter mark", 0x115F: "hangul choseong filler", 0x1160: "hangul jungseong filler",
+    0x3164: "hangul filler", 0xFFA0: "halfwidth hangul filler",
+}
+BIDI = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | set(range(0x206A, 0x2070))
+ODD_SPACES = {0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009,
+              0x200A, 0x202F, 0x205F, 0x3000, 0x2028, 0x2029}
+NBSP = 0x00A0
+QUOTES = {"“": '"', "”": '"', "„": '"', "‘": "'", "’": "'", "‚": "'"}
+
+def _is_emoji(ch):
+    cp = ord(ch)
+    return (0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2300 <= cp <= 0x23FF
+            or 0x2B00 <= cp <= 0x2BFF or cp in (0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139, 0x3030, 0x303D))
+
+def clean_text(s, quotes=True, keep_nbsp=False):
+    out, counts, prev = [], {}, ""
+    i, n = 0, len(s)
+
+    def hit(k):
+        counts[k] = counts.get(k, 0) + 1
+
+    while i < n:
+        ch = s[i]; cp = ord(ch)
+        nxt = s[i + 1] if i + 1 < n else ""
+        if cp == 0x200D and prev and _is_emoji(prev) and nxt and _is_emoji(nxt):
+            out.append(ch)
+        elif cp in (0xFE0E, 0xFE0F):
+            if prev and (_is_emoji(prev) or prev.isdigit() or prev in "#*"):
+                out.append(ch)
+            else:
+                hit("variation selector suelto")
+        elif 0xFE00 <= cp <= 0xFE0D or 0xE0100 <= cp <= 0xE01EF:
+            hit("variation selector suelto")
+        elif 0xE0000 <= cp <= 0xE007F:
+            j = i
+            while j < n and 0xE0000 <= ord(s[j]) <= 0xE007F:
+                j += 1
+            if prev == "\U0001F3F4" and ord(s[j - 1]) == 0xE007F:
+                out.append(s[i:j])
+            else:
+                counts["caracteres tag (texto oculto)"] = counts.get("caracteres tag (texto oculto)", 0) + (j - i)
+            prev = s[j - 1]; i = j; continue
+        elif cp in INVISIBLE:
+            hit(INVISIBLE[cp])
+        elif cp in BIDI:
+            hit("control bidireccional")
+        elif cp in ODD_SPACES:
+            hit("espacio Unicode no estándar"); out.append("\n" if cp in (0x2028, 0x2029) else " ")
+        elif cp == NBSP and not keep_nbsp:
+            hit("espacio duro (NBSP)"); out.append(" ")
+        elif quotes and ch in QUOTES:
+            hit("comilla curva"); out.append(QUOTES[ch])
+        elif unicodedata.category(ch) in ("Cc",) and ch not in "\n\r\t":
+            hit("carácter de control")
+        elif unicodedata.category(ch) == "Co":
+            hit("carácter de uso privado")
+        else:
+            out.append(ch)
+        prev = ch; i += 1
+    return "".join(out), counts
+
+
 # --- CSS PERSONALIZADO ---
 st.markdown("""
     <style>
@@ -23,37 +97,28 @@ st.markdown("""
     .stApp { background-color: #0F1115; font-family: 'Inter', sans-serif; }
     h1, h2, h3 { font-family: 'Inter', sans-serif !important; color: #F5F5F5 !important; font-weight: 600 !important; }
     
-    /* ARREGLO PARA EL BOTÓN DE ABRIR LA BARRA LATERAL */
     [data-testid="collapsedControl"] {
-        display: block !important;
-        color: #D97757 !important; 
-        background-color: #1E293B !important;
-        border-radius: 50% !important;
-        padding: 5px !important;
+        display: block !important; color: #D97757 !important; 
+        background-color: #1E293B !important; border-radius: 50% !important; padding: 5px !important;
     }
 
     .block-container { padding-top: 2rem !important; }
     
-    /* ESTILOS PARA LA PANTALLA DE LOGIN */
     .login-title { font-size: 2rem !important; color: #F5F5F5; text-align: center; margin-bottom: 0.5rem; margin-top: 1rem; }
     .login-intro { font-size: 1rem; color: #A0A0A0; text-align: center; max-width: 400px; line-height: 1.5; margin: 0 auto 2rem auto; }
 
-    /* CAJA DE CONTRASEÑA */
     .stTextInput>div>div>input {
         background-color: #16181D !important; border: 1px solid #2A2D35 !important;
         color: #FFFFFF !important; border-radius: 8px !important;
         padding: 0.8rem !important; text-align: center; 
     }
     .stTextInput>div>div>input:focus { border-color: #D97757 !important; box-shadow: 0 0 0 1px #D97757 !important; }
-    
     .stTextInput>label { display: flex; justify-content: center; color: #A0A0A0 !important; }
 
-    /* ESTILOS GENERALES DE LA APP */
     .header-title { font-size: 2.2rem !important; color: #F5F5F5; margin-bottom: 0.2rem; margin-top: -1rem; }
     .header-subtitle { font-size: 0.95rem; color: #888888; margin-bottom: 1.5rem; }
     h4 { font-family: 'Inter', sans-serif !important; color: #E0E0E0 !important; font-weight: 500 !important; font-size: 1rem !important; margin-bottom: 0.5rem !important; letter-spacing: 0.02em; }
 
-    /* CAJAS DE TEXTO (LETRAS BLANCAS) */
     .stTextArea textarea {
         font-family: 'Inter', sans-serif; font-size: 1rem; line-height: 1.6;
         background-color: #16181D !important; border: 1px solid #2A2D35 !important;
@@ -75,26 +140,14 @@ st.markdown("""
     }
     .stButton>button[kind="primary"]:hover { background-color: #c56544 !important; }
 
-    /* --- AJUSTES DE LA BARRA LATERAL --- */
     [data-testid="stSidebar"] { background-color: #0B0D10; border-right: 1px solid #1F2228; }
-    
-    /* RADIO BUTTONS (LETRAS BLANCAS) */
     .stRadio label p { color: #FFFFFF !important; font-size: 0.95rem !important; }
-    
-    /* CUADRO DE MOTOR PERSONALIZADO */
-    .motor-box {
-        background-color: #1E293B; border-left: 4px solid #3B82F6; 
-        padding: 1rem; border-radius: 6px; margin-top: 0.5rem; margin-bottom: 1.5rem;
-    }
-    .motor-box strong { color: #E0E0E0; font-size: 0.95rem; }
-    .motor-box p { color: #9CA3AF; font-size: 0.85rem; margin-top: 0.3rem; margin-bottom: 0; font-style: italic; }
 
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
 
     .signature-container { display: flex; justify-content: flex-end; width: 100%; margin-top: -2rem; margin-bottom: 1rem; padding-right: 1rem; }
     .signature-text { font-family: 'Inter', sans-serif; font-size: 0.65rem; color: #FFFFFF; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; }
 
-    /* --- PIE DE PÁGINA --- */
     .footer-container {
         text-align: center; margin-top: 4rem; padding-top: 1.5rem;
         border-top: 1px solid #1F2228; color: #666; font-size: 0.85rem;
@@ -103,11 +156,8 @@ st.markdown("""
         max-width: 800px; margin: 0 auto 1rem auto;
         color: #888; font-size: 0.8rem; line-height: 1.5; font-style: italic;
     }
-    .footer-copyright {
-        color: #FFFFFF; opacity: 0.8; font-size: 0.8rem;
-    }
+    .footer-copyright { color: #FFFFFF; opacity: 0.8; font-size: 0.8rem; }
 
-    /* --- RESPONSIVE (MÓVILES) --- */
     @media (max-width: 768px) {
         .header-title { font-size: 1.8rem !important; }
         .stButton>button { padding: 0.8rem; font-size: 1rem; }
@@ -126,9 +176,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
-        
         col_izq, col_centro, col_der = st.columns([1, 2, 1])
-        
         with col_centro:
             col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
             with col_logo_centro:
@@ -155,7 +203,6 @@ def check_password():
                 <div class="footer-copyright">®Humanizadormanu derechos reservados © 2026</div>
             </div>
         """, unsafe_allow_html=True)
-            
         return False
     else:
         return True
@@ -173,7 +220,6 @@ st.markdown('<div class="signature-container"><div class="signature-text">Elabor
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True) 
-    
     col_logo_izq, col_logo_centro, col_logo_der = st.columns([1, 1, 1])
     with col_logo_centro:
         st.image("https://raw.githubusercontent.com/manuvalenzu/humanizador-app/main/logo.png", width=100)
@@ -199,9 +245,9 @@ with st.sidebar:
 
 # --- ÁREA PRINCIPAL ---
 st.markdown('<div class="header-title">Humanizador de Textos</div>', unsafe_allow_html=True)
-st.markdown('<div class="header-subtitle">Refina textos generados por IA para darles una voz auténticamente humana.</div>', unsafe_allow_html=True)
+st.markdown('<div class="header-subtitle">Refina textos generados por IA para darles una voz auténticamente humana y sin metadatos ocultos.</div>', unsafe_allow_html=True)
 
-st.info("🔒 Tu texto se procesa con Gemini de Google. Por seguridad, no pegues datos personales ni confidenciales.")
+st.info("🔒 Tu texto se procesa con Gemini de Google y se limpia de caracteres invisibles. Por seguridad, no pegues datos personales ni confidenciales.")
 
 # Inicializamos el estado
 if "texto_humanizado" not in st.session_state:
@@ -220,7 +266,7 @@ with col1:
         "Pega tu texto aquí:", 
         height=400, 
         label_visibility="collapsed",
-        max_chars=5000, # LÍMITE DE SEGURIDAD
+        max_chars=5000,
         key="input_original_key"
     )
 
@@ -250,59 +296,76 @@ with col_btn1:
                 try:
                     client = genai.Client(api_key=MI_API_KEY)
                     
-                    # PROMPT AGRESIVO: No limpia, REESCRIBE desde cero.
+                    # PROMPT MAESTRO INTEGRADO (Skill Humanizador)
                     base_rules = """
-                    Eres un redactor humano experto. Tu tarea NO es limpiar el texto, sino REESCRIBIRLO COMPLETAMENTE desde cero con tus propias palabras.
-                    Imagina que leíste el texto original, cerraste el documento, y ahora tienes que explicar la misma idea a un colega, manteniendo los mismos datos y el mismo nivel de formalidad.
+                    Eres un editor humano experto. Recibes un texto y lo devuelves sonando como si lo hubiera escrito una persona concreta. Corriges la forma; el contenido se queda.
                     
-                    REGLAS DE REESCRITURA HUMANA:
-                    1. Destruye la estructura original: No copies las mismas oraciones. Cambia el orden de las ideas si es necesario.
-                    2. Prohibido el vocabulario de IA: No uses "crucial", "pivotal", "testimonio", "sinergia", "panorama", "entramado", "fomentar", "potenciar", "destacar", "vibrante", "hito", "clave", "es fundamental".
-                    3. Prohibido usar el verbo "ser" de forma rebuscada: Cambia "se erige como", "constituye", "representa un" por "es", "tiene", "sirve para".
-                    4. Rompe la "Regla de Tres": Si hay listas de tres adjetivos o ideas, deja solo dos o una. No forces el ritmo.
-                    5. Elimina los gerundios de relleno al final de las frases: "..., reflejando", "..., destacando". Corta la frase o di la idea directo.
-                    6. Evita los paralelismos negativos: "No solo X, sino también Y".
-                    7. PROHIBIDO usar emojis, negritas mecánicas, viñetas o comillas curvas.
-                    8. NO cambies los datos, cifras, nombres ni citas. Si el texto original menciona una ley o un autor, mantenlo intacto.
-                    9. Devuelve SOLO el texto final reescrito, sin saludos ni explicaciones.
+                    REGLAS QUE NO SE ROMPEN:
+                    1. No inventes datos, cifras, nombres, citas ni fuentes.
+                    2. Conserva el sentido, incluidas las afirmaciones y advertencias.
+                    3. No toques citas textuales, referencias, nombres propios ni términos técnicos.
+                    
+                    PASO 1: DETECTAR LAS MARCAS (Elimínalas sin piedad)
+                    - Inflado: "marca un antes y un después", "es un testimonio de", "juega un rol fundamental", "en el panorama actual".
+                    - Tono de folleto: "vibrante", "enclavado en", "imperdible", "de primer nivel".
+                    - Estructuras repetidas: "No se trata solo de X, sino de Y", tríos forzados (innovación, compromiso y excelencia), gerundios de remate (..., reflejando su compromiso).
+                    - Vocabulario de piloto automático: "cabe destacar", "es importante señalar", "en este sentido", "potenciar", "fomentar", "robusto", "integral", "sinergia", "abordar", "clave", "crucial", "fundamental", "en definitiva".
+                    - Evitar el verbo ser: "se erige como", "se posiciona como", "constituye".
+                    - Formato: Quita negritas salpicadas, listas con "**Título:**" y comillas curvas.
+                    
+                    PASO 2: REESCRIBIR (Destruye la estructura de IA)
+                    - Di la cosa: Sujeto, verbo, dato. Sé directo.
+                    - Varía el ritmo: Alterna frases cortas con otras largas. Algún párrafo puede tener una sola oración.
+                    - Repite la palabra correcta antes que buscarle sinónimos.
+                    - Usa conectores de verdad ("pero", "por eso", "aunque").
+                    - Termina cuando se acaba lo que hay que decir. Sin moralejas ni cierres genéricos.
+                    
+                    RESULTADO: Devuelve SOLO el texto final, sin explicaciones ni saludos.
                     """
                     
                     if tono_seleccionado == "Académico Formal":
                         prompt_sistema = base_rules + """
-                        TONO: Académico Formal (Para tesis, papers, docentes).
-                        - Usa un vocabulario rico y formal (ej. "no obstante", "asimismo").
+                        TONO: Académico Formal.
+                        - Usa un vocabulario rico y formal.
                         - Usa la primera persona del plural (ej. "como sociedad", "nos lleva a pensar").
-                        - Introduce alguna pregunta retórica reflexiva para romper el ritmo.
                         - Mantén una estructura de párrafos irregular pero coherente.
                         """
                     elif tono_seleccionado == "Profesional / Trabajador":
                         prompt_sistema = base_rules + """
-                        TONO: Profesional / Trabajador (Para informes, correos corporativos, propuestas).
-                        - Sé directo y ejecutivo. Ve al grano.
-                        - Usa un lenguaje claro, persuasivo pero sin ser informal.
-                        - Puedes usar frases cortas para dar énfasis (ej. "El resultado es claro.", "Aquí hay un problema.").
-                        - Agrega algún toque de opinión personal profesional (ej. "Mi recomendación es...", "A mi juicio...").
+                        TONO: Profesional / Trabajador.
+                        - Sé directo y ejecutivo.
+                        - Usa frases cortas para dar énfasis.
+                        - Agrega algún toque de opinión personal profesional.
                         """
                     else:
                         prompt_sistema = base_rules + """
-                        TONO: Estudiante Universitario (Para ensayos, foros, trabajos de clase).
+                        TONO: Estudiante Universitario.
                         - Usa un vocabulario académico pero natural.
-                        - Usa conectores humanos (ej. "A fin de cuentas...", "Lo cierto es que...").
-                        - Puedes usar la primera persona del singular ocasionalmente para dar opinión (ej. "Considero que...", "A mi parecer...").
-                        - Rompe la estructura rígida: mezcla frases cortas con largas.
-                        - Usa paréntesis para aclaraciones (como si estuvieras pensando en voz alta).
+                        - Usa conectores humanos.
+                        - Puedes usar la primera persona del singular.
+                        - Usa paréntesis para aclaraciones.
                         """
                     
                     response = client.models.generate_content(
-                        model="gemini-3.5-flash-lite", # Dejamos solo el modelo rebelde
+                        model="gemini-3.5-flash-lite", 
                         contents=texto_original,
                         config=types.GenerateContentConfig(
                             system_instruction=prompt_sistema, 
-                            temperature=0.9, # Temperatura alta para forzar la creatividad
+                            temperature=0.9,
                         )
                     )
                     
-                    st.session_state["texto_humanizado"] = response.text
+                    texto_generado = response.text
+                    
+                    # --- LIMPIEZA DE CARACTERES INVISIBLES ---
+                    texto_limpio, reporte_limpieza = clean_text(texto_generado, quotes=True, keep_nbsp=False)
+                    
+                    st.session_state["texto_humanizado"] = texto_limpio
+                    
+                    if reporte_limpieza:
+                        detalles = ", ".join([f"{v} {k}" for k, v in reporte_limpieza.items()])
+                        st.toast(f"🧹 Limpieza aplicada: {detalles}", icon="✅")
+                    
                     st.rerun() 
                     
                 except Exception as e:
