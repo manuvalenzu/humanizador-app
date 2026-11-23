@@ -297,6 +297,9 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
             raise ProveedorNoDisponible(f"{p['nombre']}: cuota agotada por ahora.", PAUSA_CUOTA)
         if resp.status_code in (401, 403):
             raise ProveedorNoDisponible(f"{p['nombre']}: la clave fue rechazada.", PAUSA_CLAVE)
+        if resp.status_code == 402 or "insufficient balance" in resp.text.lower():
+            # Saldo pagado agotado (DeepSeek, OpenAI, Anthropic): se salta este proveedor sin reintentar
+            raise ProveedorNoDisponible(f"{p['nombre']}: se acabó el saldo de la cuenta. Recarga para volver a usarlo.", PAUSA_CLAVE)
         ultimo_error = (f"{p['nombre']} ({modelo}) HTTP {resp.status_code}: {resp.text[:200]}"
                         if resp.status_code != 200 else f"{p['nombre']} ({modelo}) devolvió una respuesta vacía.")
     raise RuntimeError(ultimo_error)
