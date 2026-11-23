@@ -136,7 +136,7 @@ def _puntaje_modelo(pid, mid, creado):
 
 
 # Cambiar este número obliga a volver a detectar los modelos tras una actualización del código
-VERSION_MODELOS = "v13"
+VERSION_MODELOS = "v14"
 # Modelos ya detectados en el hilo principal (los bloques en paralelo los leen de aquí)
 MODELOS_RESUELTOS = {}
 
@@ -197,6 +197,8 @@ def _post_con_ajustes(url, headers, payload, tipo, limite=90):
                 payload.pop("temperature", None); payload.pop("top_p", None); cambiado = True
             if "reasoning" in texto and "reasoning_effort" in payload:
                 payload.pop("reasoning_effort", None); cambiado = True
+            if "thinking" in texto and "thinking" in payload:
+                payload.pop("thinking", None); cambiado = True
             if "max_tokens" in texto and "max_tokens" in payload and tipo == "openai":
                 # Modelos nuevos de OpenAI usan max_completion_tokens (incluye el razonamiento)
                 payload["max_completion_tokens"] = payload.pop("max_tokens") * 3; cambiado = True
@@ -262,6 +264,10 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
                 # Si toca un modelo que razona (gpt-oss), que piense poco: responde mucho más rápido
                 if "gpt-oss" in modelo.lower():
                     payload["reasoning_effort"] = "low"
+                # Los modelos nuevos de DeepSeek (deepseek-flash, v4) "piensan" por defecto: gastan los
+                # tokens en razonar y devuelven el texto vacío. Se apaga el modo pensamiento.
+                if pid == "deepseek":
+                    payload["thinking"] = {"type": "disabled"}
                 resp = _post_con_ajustes(f"{p['base']}/chat/completions", headers, payload, "openai", limite)
                 contenido = ""
                 if resp.status_code == 200:
