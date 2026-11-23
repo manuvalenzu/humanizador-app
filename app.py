@@ -127,14 +127,16 @@ def _puntaje_modelo(pid, mid, creado):
     prefs = PREFERENCIAS.get(pid, ())
     pref = next((i for i, p in enumerate(prefs) if p in low), len(prefs))
     gratis = 0 if (pid == "openrouter" and low.endswith(":free")) else 1
+    # Qwen y GLM a veces mezclan palabras en chino al escribir en español
+    mezcla_idioma = 1 if any(x in low for x in ("qwen", "qwq", "glm", "minimax")) else 0
     # Los modelos que "razonan" antes de responder o que son gigantes tardan mucho más
     razonador = 1 if any(r in low for r in ("-r1", "reasoning", "thinking", "gpt-oss", "qwq")) and pid not in ("openai", "anthropic") else 0
     gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b", "ultra")) else 0
-    return (gratis, debil, razonador, gigante, pref, -(creado or 0))
+    return (gratis, mezcla_idioma, debil, razonador, gigante, pref, -(creado or 0))
 
 
 # Cambiar este número obliga a volver a detectar los modelos tras una actualización del código
-VERSION_MODELOS = "v12"
+VERSION_MODELOS = "v13"
 # Modelos ya detectados en el hilo principal (los bloques en paralelo los leen de aquí)
 MODELOS_RESUELTOS = {}
 
@@ -552,6 +554,18 @@ def rango_parrafos(par_ref, partir):
     return par_ref, max(par_ref + 1, math.ceil(par_ref * 1.5))
 
 
+# Letras de escrituras que no corresponden a un texto en español
+PATRON_OTRA_ESCRITURA = re.compile(
+    r"[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0E00-\u0E7F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]+"
+)
+
+
+def palabras_otro_idioma(texto, referencia=""):
+    """Trozos en otra escritura que no estaban en el original (p. ej. "定义了")."""
+    del_original = set(PATRON_OTRA_ESCRITURA.findall(referencia or ""))
+    return [t for t in dict.fromkeys(PATRON_OTRA_ESCRITURA.findall(texto or "")) if t not in del_original]
+
+
 def problemas_de_fidelidad(texto, referencia, partir=False):
     """Compara contra el original: largo, párrafos y datos perdidos."""
     problemas = []
@@ -572,6 +586,13 @@ def problemas_de_fidelidad(texto, referencia, partir=False):
         problemas.append(
             f"El texto quedó demasiado fragmentado ({par_txt} párrafos para {par_ref} del original). "
             f"Únelo en {maximo} párrafos como máximo."
+        )
+    extranjeras = palabras_otro_idioma(texto, referencia)
+    if extranjeras:
+        problemas.append(
+            "Hay palabras en otro idioma que no estaban en el original: "
+            + ", ".join(f'"{t}"' for t in extranjeras[:5])
+            + ". Reemplázalas por su equivalente en español, sin cambiar el resto de la oración."
         )
     faltan = datos_faltantes(referencia, texto)
     if faltan:
@@ -1168,7 +1189,7 @@ with st.sidebar:
              "(4 a 6 llamadas por bloque).",
     )
     pasadas = st.slider(
-        "Pasadas de humanización", 1, 3, 2,
+        "Pasadas de humanización", 1, 3, 1,
         help="Con 2, el resultado de la primera pasada vuelve a entrar al humanizador, igual que copiarlo y "
              "pegarlo de nuevo. Cada pasada extra suma más o menos el mismo tiempo que la primera.",
     )
@@ -1307,6 +1328,7 @@ REGLAS DE ESTILO (aplícalas sin acortar el texto):
 10. PALABRA CONCRETA, NO LA PRIMERA QUE SALE: entre dos formas correctas de decir algo, elige la más específica y menos de plantilla ("los nobles vendieron sus tierras" en vez de "se produjeron cambios en la propiedad"). Repite una palabra si es la justa; no la cambies por un sinónimo solo para variar.
 11. SIN MOLDE FIJO: que los párrafos no sigan todos el mismo esquema (afirmación, explicación, consecuencia). Alguna oración puede empezar con "Y" o "Pero"; alguna puede ser una frase breve sin verbo. No redondees cada frase: un texto de persona tiene oraciones secas junto a otras más sueltas.
 12. CONECTORES AL INICIO: como máximo una oración de todo el texto puede abrir con "Además", "Sin embargo", "Por lo tanto", "Por ello", "De este modo", "Finalmente" o parecidos. Las demás entran directo con el sujeto o el hecho.
+13. IDIOMA: escribe todo en español. Ninguna palabra en chino, inglés ni otro idioma, salvo nombres propios y citas que ya vengan así en el texto.
 
 Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
 """
@@ -1577,11 +1599,18 @@ def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, parti
         if not problemas or (not opciones["profundo"] and not fidelidad and len(problemas) < 3):
             break
         lista = "\n".join(f"- {p}" for p in problemas)
+        plan_corr = plan
+        if palabras_otro_idioma(texto_generado, texto_base):
+            # El proveedor que mezcló idiomas pasa al final de la fila para esta corrección
+            autor = next((pid for pid, p in PROVEEDORES.items() if modelo_final.startswith(p["nombre"] + " ")), None)
+            if autor:
+                plan_corr = dict(plan)
+                plan_corr["correccion"] = [p for p in plan["correccion"] if p != autor] + [autor]
         try:
             corregido, _ = generar(
                 con_muestra(PROMPT_CORRECCION, opciones.get("muestra")),
                 f"{medida}\n\nPROBLEMAS DETECTADOS:\n{lista}\n\nORIGINAL:\n{texto_base}\n\nTEXTO:\n{texto_generado}",
-                0.7, "correccion", plan, avisos, usados, tiempos,
+                0.7, "correccion", plan_corr, avisos, usados, tiempos,
             )
         except Exception as e_corr:
             avisos.append(f"No se pudo hacer la corrección automática de un bloque ({e_corr}).")
