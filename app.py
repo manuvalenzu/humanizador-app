@@ -1571,6 +1571,26 @@ def es_titulo(parrafo):
     return 0 < contar_palabras(p) <= 18 and p[-1:] not in ".!?;:" and "\n" not in p
 
 
+def titulo_en_espanol(titulo, texto_completo=""):
+    """En español los títulos van con mayúscula solo al inicio y en nombres propios (norma RAE).
+    "El Futuro en Nuestras Manos" -> "El futuro en nuestras manos". Los nombres propios que en el
+    texto aparecen con mayúscula a mitad de oración se respetan, igual que las siglas (IA, ONU)."""
+    palabras = titulo.split()
+    largas = [w for w in palabras if len(w.strip(':,.¿?¡!"()')) > 3]
+    if len(largas) < 2 or sum(1 for w in largas if w[:1].isupper()) / len(largas) < 0.6:
+        return titulo  # no está escrito con mayúscula en cada palabra
+    propios = set(re.findall(r"(?<=[a-záéíóúñ,;] )([A-ZÁÉÍÓÚÑ][a-záéíóúñü]+)", texto_completo or ""))
+    salida, inicio = [], True
+    for w in palabras:
+        limpia = w.strip(':,.¿?¡!"()')
+        if inicio or limpia.isupper() or limpia in propios or not limpia[:1].isupper():
+            salida.append(w)
+        else:
+            salida.append(w.replace(limpia, limpia[:1].lower() + limpia[1:], 1))
+        inicio = w.endswith(":")
+    return " ".join(salida)
+
+
 def dividir_en_bloques(texto):
     """Agrupa párrafos en bloques de ~320 palabras. Devuelve [(es_titulo, texto)]."""
     bloques, actual = [], []
@@ -1839,7 +1859,7 @@ def procesar(texto_original, estado):
         partes, usados_p, tiempos_p, antes_p, modelo_p = [], {}, {}, 0, ""
         for i, (titulo, texto) in enumerate(bloques):
             if titulo:
-                partes.append(texto)
+                partes.append(titulo_en_espanol(texto, texto_entrada))
                 continue
             texto_bloque, modelo_bloque, usados_b, tiempos_b, antes_b = resultados[i]
             partes.append(texto_bloque)
