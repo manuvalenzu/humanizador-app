@@ -4,6 +4,7 @@ from google.genai import types
 import streamlit.components.v1 as components
 import requests
 import math
+import os
 import statistics
 import time
 import json
@@ -642,7 +643,7 @@ def dividir_oraciones(texto):
     return [p for p in partes if len(p.split()) >= 2]
 
 
-def auditar_texto(texto, referencia=None, partir=False):
+def auditar_texto(texto, referencia=None, partir=False, permitidas=()):
     """Devuelve (lista_de_problemas, métricas). Con referencia, revisa también la fidelidad."""
     problemas = problemas_de_fidelidad(texto, referencia, partir) if referencia else []
     oraciones = dividir_oraciones(texto)
@@ -678,7 +679,7 @@ def auditar_texto(texto, referencia=None, partir=False):
             problemas.append(f'Oración demasiado larga, divídela: "{o[:90]}..."')
 
     bajo = texto.lower()
-    vetadas = sorted({f for f in FRASES_VETADAS if re.search(r"\b" + re.escape(f) + r"\b", bajo)})
+    vetadas = sorted({f for f in FRASES_VETADAS if f not in permitidas and re.search(r"\b" + re.escape(f) + r"\b", bajo)})
     if vetadas:
         problemas.append("Quita o reemplaza estas expresiones típicas de IA: " + ", ".join(f'"{v}"' for v in vetadas) + ".")
 
@@ -717,7 +718,7 @@ def auditar_texto(texto, referencia=None, partir=False):
 
     if len(oraciones) >= 4:
         con_conector = [o for o in oraciones if _normalizar(o).lstrip('"¿¡(').startswith(
-            tuple(_normalizar(c) + s for c in CONECTORES_INICIO for s in (",", " ")))]
+            tuple(_normalizar(c) + s for c in CONECTORES_INICIO if c not in permitidas for s in (",", " ")))]
         if len(con_conector) >= 2 and len(con_conector) / len(oraciones) > 0.12:
             ejemplos = "; ".join(f'"{o[:45]}..."' for o in con_conector[:3])
             problemas.append(
@@ -1272,6 +1273,12 @@ with st.sidebar:
         help="Capa C: revisa ritmo, muletillas, enumeraciones, gerundios, inicios y cierre, y corrige hasta 3 veces.",
     )
     usar_detectores = False        # verificación con GPTZero y Copyleaks desactivada (sin interruptor)
+    usar_estilo_autor = st.toggle(
+        "Mi estilo académico (tesis 2003)",
+        value=False,
+        help="Usa el vocabulario formal y los conectores de tu tesis de 2003 y, si no pegas otra muestra, "
+             "un fragmento de ella como muestra de estilo. Apágalo en las pruebas del experimento que no lo usen.",
+    )
     muestra_estilo = st.text_area(
         "Muestra de tu propia escritura (opcional)",
         height=140, max_chars=3000, key="muestra_estilo",
@@ -1432,6 +1439,52 @@ QUÉ DEBES HACER:
 Formato: un solo párrafo de prosa, sin rayas largas, sin negritas, sin listas y sin comillas curvas.
 Devuelve ÚNICAMENTE el párrafo reescrito.
 """
+
+
+# PERFIL "MI ESTILO ACADÉMICO": vocabulario formal tomado de la tesis del autor (2003).
+# Con el interruptor encendido, estas expresiones dejan de estar vetadas y la redacción las usa con moderación.
+EXPRESIONES_AUTOR = (
+    "por tanto", "por lo tanto", "de acuerdo con", "de lo anterior", "si bien es cierto", "de cualquier manera",
+    "en términos estrictos", "en directa relación", "en función de", "en rigor", "por cierto", "es más", "aún más",
+    "es por ello", "es así como", "en ese sentido", "al mismo tiempo", "por medio de", "a través de", "debido a",
+    "sin embargo", "de hecho", "así como", "por consiguiente", "por ende", "de esta manera", "de esta forma",
+    "en este contexto", "por otro lado", "en primer lugar", "en segunda instancia", "finalmente",
+    "consecuentemente", "indiscutiblemente", "fundamentalmente", "necesariamente", "en la actualidad", "es necesario",
+)
+VOCABULARIO_AUTOR = (
+    "condicionantes y exigencias", "tejido social", "calidad de vida", "uso del suelo", "gestión", "emplazamiento",
+    "planificación", "habitabilidad", "fraccionamiento", "supeditados", "coyuntural", "prospectivamente",
+    "consolidación", "instrumentos de planificación", "intereses colectivos", "desarrollo armónico",
+)
+
+
+def cargar_muestra_autor():
+    """Muestra fija del estilo del autor: primero desde Secretos (MUESTRA_AUTOR), si no desde estilo_autor.txt."""
+    texto = leer_secreto("MUESTRA_AUTOR", "") or ""
+    if not texto:
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "estilo_autor.txt"), encoding="utf-8") as f:
+                texto = f.read()
+        except OSError:
+            texto = ""
+    return texto.strip()[:3000]
+
+
+def con_perfil_autor(prompt):
+    """Instrucciones del perfil 'mi estilo académico'."""
+    return (prompt + "\nPERFIL DE ESTILO DEL AUTOR (académico, ciencias sociales, Chile): escribe con el registro de un "
+            "profesor universitario. Puedes usar con moderación (una o dos veces cada una en todo el texto, nunca "
+            "seguidas) estas expresiones propias del autor: " + ", ".join(f'"{e}"' for e in EXPRESIONES_AUTOR[:22])
+            + ". Prefiere oraciones explicativas con incisos y subordinadas, alternadas con oraciones breves. "
+            "Usa vocabulario técnico preciso cuando el tema lo permita (por ejemplo: "
+            + ", ".join(VOCABULARIO_AUTOR[:8]) + "), sin forzarlo si el tema es otro.\n")
+
+
+def con_estilo(prompt, opciones):
+    """Agrega el perfil del autor (si está encendido) y la muestra de escritura."""
+    if opciones.get("perfil_autor"):
+        prompt = con_perfil_autor(prompt)
+    return con_muestra(prompt, opciones.get("muestra"))
 
 
 def con_muestra(prompt, muestra):
@@ -1636,7 +1689,7 @@ def procesar_bloque(texto_base, plan, partir, avisos, opciones):
     if not opciones["profundo"]:
         # MODO RÁPIDO: una sola llamada que reescribe, reestructura y limpia a la vez
         entrada = f"{medida}\n\nTEXTO A REESCRIBIR:\n{texto_base}"
-        texto_generado, modelo_final = generar(con_muestra(PROMPT_RAPIDO, opciones.get("muestra")), entrada,
+        texto_generado, modelo_final = generar(con_estilo(PROMPT_RAPIDO, opciones), entrada,
                                                TEMP_FINAL, "final", plan, avisos, usados, tiempos)
         texto_generado, _ = clean_text(texto_generado)
         return revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos)
@@ -1664,7 +1717,7 @@ def procesar_bloque(texto_base, plan, partir, avisos, opciones):
 
     # REDACCIÓN FINAL
     entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
-    texto_generado, modelo_final = generar(con_muestra(PROMPT_FINAL, opciones.get("muestra")), entrada_final,
+    texto_generado, modelo_final = generar(con_estilo(PROMPT_FINAL, opciones), entrada_final,
                                            TEMP_FINAL, "final", plan, avisos, usados, tiempos)
     texto_generado, _ = clean_text(texto_generado)
     return revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos)
@@ -1672,10 +1725,11 @@ def procesar_bloque(texto_base, plan, partir, avisos, opciones):
 
 def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos):
     """CAPA C: revisión en código y, solo si hace falta, una corrección."""
-    problemas_iniciales, _ = auditar_texto(texto_generado, texto_base, partir)
+    permitidas = opciones.get("permitidas", ())
+    problemas_iniciales, _ = auditar_texto(texto_generado, texto_base, partir, permitidas)
     rondas = 2 if opciones["profundo"] else 1
     for ronda in range(rondas):
-        problemas, _ = auditar_texto(texto_generado, texto_base, partir)
+        problemas, _ = auditar_texto(texto_generado, texto_base, partir, permitidas)
         fidelidad = problemas_de_fidelidad(texto_generado, texto_base, partir)
         if not opciones["auditoria"]:
             problemas = fidelidad
@@ -1692,7 +1746,7 @@ def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, parti
                 plan_corr["correccion"] = [p for p in plan["correccion"] if p != autor] + [autor]
         try:
             corregido, _ = generar(
-                con_muestra(PROMPT_CORRECCION, opciones.get("muestra")),
+                con_estilo(PROMPT_CORRECCION, opciones),
                 f"{medida}\n\nPROBLEMAS DETECTADOS:\n{lista}\n\nORIGINAL:\n{texto_base}\n\nTEXTO:\n{texto_generado}",
                 0.7, "correccion", plan_corr, avisos, usados, tiempos,
             )
@@ -1700,7 +1754,7 @@ def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, parti
             avisos.append(f"No se pudo hacer la corrección automática de un bloque ({e_corr}).")
             break
         corregido, _ = clean_text(corregido)
-        nuevos, _ = auditar_texto(corregido, texto_base, partir)
+        nuevos, _ = auditar_texto(corregido, texto_base, partir, permitidas)
         fid_antes = len(fidelidad)
         fid_despues = len(problemas_de_fidelidad(corregido, texto_base, partir))
         no_acorta = contar_palabras(corregido) >= 0.95 * contar_palabras(texto_generado) or fid_despues < fid_antes
@@ -1717,7 +1771,7 @@ def reescribir_parrafo_marcado(parrafo, marcadas, plan, opciones, avisos, usados
     entrada = (f"El párrafo tiene {contar_palabras(parrafo)} palabras.\n\nORACIONES MARCADAS:\n{lista}\n\n"
                f"PÁRRAFO:\n{parrafo}")
     try:
-        nuevo, _ = generar(con_muestra(PROMPT_DETECTOR, opciones.get("muestra")), entrada, TEMP_FINAL,
+        nuevo, _ = generar(con_estilo(PROMPT_DETECTOR, opciones), entrada, TEMP_FINAL,
                            "detector", plan, avisos, usados, tiempos)
     except Exception:
         return parrafo
@@ -1815,7 +1869,9 @@ def procesar(texto_original, estado):
 
     partir = usar_estructura
     opciones = {"retro": usar_retrotraduccion, "auditoria": usar_auditoria, "profundo": modo_profundo,
-                "muestra": muestra_estilo}
+                "muestra": muestra_estilo or (cargar_muestra_autor() if usar_estilo_autor else ""),
+                "perfil_autor": usar_estilo_autor,
+                "permitidas": EXPRESIONES_AUTOR if usar_estilo_autor else ()}
 
     def una_pasada(texto_entrada, partir_p, numero):
         """Humaniza un texto completo por bloques. Devuelve (texto, modelo, usados, tiempos, antes, bloques)."""
@@ -1920,7 +1976,7 @@ def procesar(texto_original, estado):
         except Exception as e_det:
             avisos.append(f"No se pudo verificar con los detectores ({str(e_det)[:140]}).")
 
-    problemas_finales, metricas = auditar_texto(texto_limpio, texto_base, partir)
+    problemas_finales, metricas = auditar_texto(texto_limpio, texto_base, partir, opciones.get("permitidas", ()))
     metricas["palabras_original"] = contar_palabras(texto_base)
     metricas["palabras_resultado"] = contar_palabras(texto_limpio)
     metricas["bloques"] = total
