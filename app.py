@@ -297,9 +297,6 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
             raise ProveedorNoDisponible(f"{p['nombre']}: cuota agotada por ahora.", PAUSA_CUOTA)
         if resp.status_code in (401, 403):
             raise ProveedorNoDisponible(f"{p['nombre']}: la clave fue rechazada.", PAUSA_CLAVE)
-        if resp.status_code == 402 or "insufficient balance" in resp.text.lower():
-            # Saldo pagado agotado (DeepSeek, OpenAI, Anthropic): se salta este proveedor sin reintentar
-            raise ProveedorNoDisponible(f"{p['nombre']}: se acabó el saldo de la cuenta. Recarga para volver a usarlo.", PAUSA_CLAVE)
         ultimo_error = (f"{p['nombre']} ({modelo}) HTTP {resp.status_code}: {resp.text[:200]}"
                         if resp.status_code != 200 else f"{p['nombre']} ({modelo}) devolvió una respuesta vacía.")
     raise RuntimeError(ultimo_error)
@@ -494,34 +491,6 @@ PATRON_GERUNDIO = re.compile(
     r", (?!cuando\b|mando\b|comando\b|bando\b|blando\b|fernando\b|orlando\b)([\wáéíóúñ]+(?:ando|iendo|yendo))\b",
     re.IGNORECASE,
 )
-
-
-# Registro profesional
-COLOQUIALISMOS = ("más y más", "rompecabezas", "por supuesto", "un montón", "o sea", "la verdad es que",
-                  "de verdad", "súper", "para nada", "ni hablar", "a full", "harto")
-INICIOS_REPETIBLES = ("tambien", "y", "pero", "asi", "despues", "entonces", "ademas")
-CON_TILDE = {"tambien": "también", "asi": "así", "despues": "después", "ademas": "además"}
-# Formas verbales frecuentes para reconocer una oración sin verbo
-_VERBOS_COMUNES = {"es", "son", "fue", "fueron", "era", "eran", "hay", "había", "habia", "está", "esta",
-                   "están", "estaban", "estaba", "tiene", "tienen", "tenía", "tenian", "tenían", "puede",
-                   "pueden", "podía", "debe", "deben", "sirve", "sirvió", "basta", "bastaba", "queda", "quedó",
-                   "existe", "existía", "va", "van", "iba", "hizo", "hace", "dio", "da", "ser", "sido"}
-_TERMINACIONES_VERBO = ("ó", "aron", "ieron", "aba", "aban", "ía", "ían", "an", "en", "ará", "erá", "irá")
-# Sustantivos en -ía que no son verbos (economía, geografía, monarquía...)
-_SUSTANTIVOS_IA = ("nomía", "grafía", "logía", "quía", "sofía", "ergía", "pañía", "vía", "día", "gría", "licía", "cracia")
-
-
-def _parece_fragmento(oracion):
-    """Oración corta sin ningún verbo reconocible ("Y la cultura.", "Geopolítica y economía, por supuesto.")."""
-    palabras = [w.strip(',.;:¿?¡!()"').lower() for w in oracion.split()]
-    palabras = [w for w in palabras if w]
-    if not palabras or len(palabras) > 7 or oracion.rstrip().endswith("?"):
-        return False
-    if any(w in _VERBOS_COMUNES for w in palabras):
-        return False
-    if any(len(w) > 3 and w.endswith(_TERMINACIONES_VERBO) and not w.endswith(_SUSTANTIVOS_IA) for w in palabras):
-        return False
-    return True
 
 
 def contar_palabras(texto):
@@ -728,7 +697,7 @@ def auditar_texto(texto, referencia=None, partir=False):
     if contar_palabras(texto) >= 150 and not re.search(r"[;:(?]", texto):
         problemas.append(
             "Toda la puntuación es coma y punto. Usa una o dos veces dos puntos, punto y coma, "
-            "o un paréntesis, donde salga natural."
+            "un paréntesis o una pregunta, donde salga natural."
         )
 
     if len(oraciones) >= 5:
@@ -736,29 +705,6 @@ def auditar_texto(texto, referencia=None, partir=False):
         for palabra in set(inicios):
             if inicios.count(palabra) >= 3 and inicios.count(palabra) / len(inicios) > 0.25:
                 problemas.append(f'Muchas oraciones empiezan con "{palabra}". Varía los inicios.')
-
-    # Registro profesional: frases sin verbo, coloquialismos, preguntas retóricas e inicios repetidos
-    sin_verbo = [o for o in oraciones if _parece_fragmento(o)]
-    if sin_verbo:
-        ejemplos = "; ".join(f'"{o[:60]}"' for o in sin_verbo[:4])
-        problemas.append(
-            f"Hay frases sueltas sin verbo que no suenan profesionales ({ejemplos}). "
-            "Únelas a la oración anterior o reescríbelas como oración completa, sin borrar su contenido."
-        )
-    coloquiales = sorted({c for c in COLOQUIALISMOS if re.search(r"\b" + re.escape(c) + r"\b", bajo)})
-    if coloquiales:
-        problemas.append("Cambia estas expresiones coloquiales por otras de registro académico: "
-                         + ", ".join(f'"{c}"' for c in coloquiales) + ".")
-    preguntas = [o for o in oraciones if o.rstrip().endswith("?")]
-    if preguntas and not (referencia and "?" in referencia):
-        problemas.append(f'Quita la pregunta retórica y conviértela en afirmación: "{preguntas[0][:80]}".')
-    if oraciones:
-        inicios_reg = [_normalizar(o.split()[0]).strip(',."¿¡(') for o in oraciones if o.split()]
-        for palabra in INICIOS_REPETIBLES:
-            n = inicios_reg.count(palabra)
-            if n >= 3:
-                problemas.append(f'{n} oraciones empiezan con "{CON_TILDE.get(palabra, palabra).capitalize()}". Deja dos como máximo: '
-                                 "une esas ideas a la oración anterior o abre con el sujeto.")
 
     if oraciones:
         ultima = oraciones[-1].lower()
@@ -1331,7 +1277,6 @@ PROMPT_EN = (
     "Translate this Spanish text into plain, everyday English. "
     "Keep EXACTLY the same paragraphs (same number, same order) and the same level of detail: do not summarize or skip anything. "
     "Keep every fact, name, institution, number, quote and year exactly as written. "
-    "Code names of operations, plans and programs (for example Operación Fortitude, Mulberry) stay exactly as in the Spanish text. "
     "Output ONLY the English text."
 )
 PROMPT_ES = (
@@ -1339,8 +1284,6 @@ PROMPT_ES = (
     "Cambia el orden de las ideas dentro de cada oración y los conectores, pero conserva los mismos párrafos, "
     "en el mismo orden y con la misma extensión. No resumas ni omitas nada. "
     "Conserva todos los datos, nombres, instituciones, cifras, citas y fechas sin inventar nada. "
-    "Los nombres en clave de operaciones, planes y programas (Fortitude, Overlord, Mulberry, Barbarroja) NO se traducen: "
-    "se escriben igual que en el texto. Por ejemplo, 'Operation Fortitude' es 'Operación Fortitude', nunca 'Operación Fortaleza'. "
     "Devuelve SOLO el texto en español."
 )
 PROMPT_PARAFRASIS = (
@@ -1384,15 +1327,14 @@ REGLAS DE ESTILO (aplícalas sin acortar el texto):
 3. EXPRESIONES VETADAS (NO USES NINGUNA): "al tiempo que", "a esto se suma", "a su vez", "ante este panorama", "entre los que destacan", "cabe destacar", "es fundamental", "es crucial", "enfrenta un reto", "fomentar", "abordar", "mediante", "reside en", "en este sentido", "en este contexto", "por otro lado", "no solo... sino también", "juega un papel", "hoy en día", "cada vez más", "panorama", "paradigma", "potenciar", "integral", "clave para", "en conclusión", "en definitiva". Reemplázalas por una expresión común; no borres la idea que acompañan.
 4. CERO GERUNDIOS DE REMATE: no cierres una frase con coma + gerundio ("..., provocando..."). Usa punto seguido y un verbo conjugado.
 5. CIERRE SIN MORALEJA: si el último párrafo termina en una reflexión genérica, reescríbela como una afirmación concreta. No borres el párrafo de cierre.
-6. RITMO IRREGULAR: alterna sin patrón fijo frases cortas (5 a 9 palabras, siempre con verbo conjugado y sentido completo) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas.
+6. RITMO IRREGULAR: alterna sin patrón fijo frases cortas (4 a 8 palabras) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas.
 7. VOCABULARIO: prefiere la palabra común sobre la culta ("usar" en vez de "utilizar", "hacer" en vez de "llevar a cabo", "empezar" en vez de "iniciar").
 8. FORMATO: solo prosa en párrafos separados por una línea en blanco. Sin rayas largas (— o –), sin negritas, sin listas, sin títulos y sin comillas curvas.
-9. PUNTUACIÓN VARIADA: no todo es coma y punto. Usa alguna vez dos puntos, punto y coma o un paréntesis corto, donde salga natural. No uses preguntas retóricas.
+9. PUNTUACIÓN VARIADA: no todo es coma y punto. Usa alguna vez dos puntos, punto y coma, un paréntesis corto o una pregunta que el mismo texto responde, donde salga natural.
 10. PALABRA CONCRETA, NO LA PRIMERA QUE SALE: entre dos formas correctas de decir algo, elige la más específica y menos de plantilla ("los nobles vendieron sus tierras" en vez de "se produjeron cambios en la propiedad"). Repite una palabra si es la justa; no la cambies por un sinónimo solo para variar.
-11. SIN MOLDE FIJO: que los párrafos no sigan todos el mismo esquema (afirmación, explicación, consecuencia). Como máximo una oración de todo el texto puede empezar con "Y" o "Pero". No redondees cada frase: un texto de persona tiene oraciones secas junto a otras más sueltas, pero todas completas.
+11. SIN MOLDE FIJO: que los párrafos no sigan todos el mismo esquema (afirmación, explicación, consecuencia). Alguna oración puede empezar con "Y" o "Pero"; alguna puede ser una frase breve sin verbo. No redondees cada frase: un texto de persona tiene oraciones secas junto a otras más sueltas.
 12. CONECTORES AL INICIO: como máximo una oración de todo el texto puede abrir con "Además", "Sin embargo", "Por lo tanto", "Por ello", "De este modo", "Finalmente" o parecidos. Las demás entran directo con el sujeto o el hecho.
 13. IDIOMA: escribe todo en español. Ninguna palabra en chino, inglés ni otro idioma, salvo nombres propios y citas que ya vengan así en el texto.
-14. REGISTRO PROFESIONAL: escribe como un estudiante universitario avanzado o un profesional. Cada oración tiene sujeto y verbo conjugado: nada de frases sueltas sin verbo ("Y la cultura.", "Geopolítica y economía, por supuesto."). Sin coloquialismos ("más y más", "era un rompecabezas", "por supuesto", "un montón"). No empieces más de dos oraciones con la misma palabra ("También", "Y", "Pero", "Así").
 
 Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
 """
@@ -1575,26 +1517,6 @@ def es_titulo(parrafo):
     """Una línea corta sin punto final se trata como título y se deja tal cual."""
     p = parrafo.strip()
     return 0 < contar_palabras(p) <= 18 and p[-1:] not in ".!?;:" and "\n" not in p
-
-
-def titulo_en_espanol(titulo, texto_completo=""):
-    """En español los títulos van con mayúscula solo al inicio y en nombres propios (norma RAE).
-    "El Futuro en Nuestras Manos" -> "El futuro en nuestras manos". Los nombres propios que en el
-    texto aparecen con mayúscula a mitad de oración se respetan, igual que las siglas (IA, ONU)."""
-    palabras = titulo.split()
-    largas = [w for w in palabras if len(w.strip(':,.¿?¡!"()')) > 3]
-    if len(largas) < 2 or sum(1 for w in largas if w[:1].isupper()) / len(largas) < 0.6:
-        return titulo  # no está escrito con mayúscula en cada palabra
-    propios = set(re.findall(r"(?<=[a-záéíóúñ,;] )([A-ZÁÉÍÓÚÑ][a-záéíóúñü]+)", texto_completo or ""))
-    salida, inicio = [], True
-    for w in palabras:
-        limpia = w.strip(':,.¿?¡!"()')
-        if inicio or limpia.isupper() or limpia in propios or not limpia[:1].isupper():
-            salida.append(w)
-        else:
-            salida.append(w.replace(limpia, limpia[:1].lower() + limpia[1:], 1))
-        inicio = w.endswith(":")
-    return " ".join(salida)
 
 
 def dividir_en_bloques(texto):
@@ -1865,7 +1787,7 @@ def procesar(texto_original, estado):
         partes, usados_p, tiempos_p, antes_p, modelo_p = [], {}, {}, 0, ""
         for i, (titulo, texto) in enumerate(bloques):
             if titulo:
-                partes.append(titulo_en_espanol(texto, texto_entrada))
+                partes.append(texto)
                 continue
             texto_bloque, modelo_bloque, usados_b, tiempos_b, antes_b = resultados[i]
             partes.append(texto_bloque)
