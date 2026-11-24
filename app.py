@@ -111,7 +111,7 @@ NO_TEXTO = ("pii", "gliner", "ner-", "classif", "detector", "translat", "nemogua
 PREFERENCIAS = {
     "anthropic": ("sonnet", "opus", "haiku"),
     "openai": ("gpt-5", "gpt-4.1", "gpt-4o", "gpt"),
-    "deepseek": ("deepseek-chat", "deepseek-v", "deepseek"),
+    "deepseek": ("deepseek-flash", "deepseek-chat", "deepseek-v", "deepseek"),   # el de las pruebas del 23 de noviembre
     "mistral": ("mistral-large-latest", "mistral-medium-latest", "mistral-large", "mistral-medium", "mistral-small-latest"),
     "nvidia": ("deepseek-v3", "llama-3.3-70b", "llama-4-maverick", "qwen3-next", "mistral-medium",
                "kimi-k2", "qwen3", "mistral-large", "deepseek", "llama"),
@@ -136,7 +136,7 @@ def _puntaje_modelo(pid, mid, creado):
 
 
 # Cambiar este número obliga a volver a detectar los modelos tras una actualización del código
-VERSION_MODELOS = "v14"
+VERSION_MODELOS = "v14b"
 # Modelos ya detectados en el hilo principal (los bloques en paralelo los leen de aquí)
 MODELOS_RESUELTOS = {}
 
