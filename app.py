@@ -1331,6 +1331,7 @@ PROMPT_EN = (
     "Translate this Spanish text into plain, everyday English. "
     "Keep EXACTLY the same paragraphs (same number, same order) and the same level of detail: do not summarize or skip anything. "
     "Keep every fact, name, institution, number, quote and year exactly as written. "
+    "Code names of operations, plans and programs (for example Operación Fortitude, Mulberry) stay exactly as in the Spanish text. "
     "Output ONLY the English text."
 )
 PROMPT_ES = (
@@ -1338,6 +1339,8 @@ PROMPT_ES = (
     "Cambia el orden de las ideas dentro de cada oración y los conectores, pero conserva los mismos párrafos, "
     "en el mismo orden y con la misma extensión. No resumas ni omitas nada. "
     "Conserva todos los datos, nombres, instituciones, cifras, citas y fechas sin inventar nada. "
+    "Los nombres en clave de operaciones, planes y programas (Fortitude, Overlord, Mulberry, Barbarroja) NO se traducen: "
+    "se escriben igual que en el texto. Por ejemplo, 'Operation Fortitude' es 'Operación Fortitude', nunca 'Operación Fortaleza'. "
     "Devuelve SOLO el texto en español."
 )
 PROMPT_PARAFRASIS = (
