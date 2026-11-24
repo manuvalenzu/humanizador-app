@@ -136,7 +136,7 @@ def _puntaje_modelo(pid, mid, creado):
 
 
 # Cambiar este número obliga a volver a detectar los modelos tras una actualización del código
-VERSION_MODELOS = "v14b"
+VERSION_MODELOS = "v14c"
 # Modelos ya detectados en el hilo principal (los bloques en paralelo los leen de aquí)
 MODELOS_RESUELTOS = {}
 
@@ -149,6 +149,9 @@ def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
         return [m.strip() for m in str(fijos).split(",") if m.strip()]
     if pid == "gemini":
         return [GEMINI_MODEL]
+    if pid == "deepseek":
+        # Fijo: deepseek-flash es el modelo de las pruebas del 23 de noviembre; v4-pro queda solo de respaldo
+        return ["deepseek-flash", "deepseek-v4-pro"]
     p = PROVEEDORES[pid]
     if p["tipo"] == "anthropic":
         headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
@@ -1183,7 +1186,7 @@ with st.sidebar:
                     MODELOS_RESUELTOS[pid] = mods
                     continue
                 opciones = mods[:30]
-                elegido = st.selectbox(nombres[pid], opciones, index=0, key=f"modelo_{pid}")
+                elegido = st.selectbox(nombres[pid], opciones, index=0, key=f"modelo_{pid}_{VERSION_MODELOS}")
                 # El elegido va primero; los demás quedan de respaldo
                 MODELOS_RESUELTOS[pid] = [elegido] + [m for m in mods if m != elegido]
 
