@@ -14,12 +14,8 @@ import html as html_lib
 import unicodedata
 import uuid
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wide")
 
-# ==========================================
-# LEE LAS CLAVES DESDE LOS SECRETOS DE STREAMLIT
-# ==========================================
 def leer_secreto(nombre, defecto=None):
     try:
         valor = st.secrets.get(nombre, defecto)
@@ -31,7 +27,7 @@ GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-3.6-flash")
 MAX_CARACTERES = 9000
 
 # ==========================================
-# PROVEEDORES DE MODELOS
+# PROVEEDORES (sin espacios al final de las claves)
 # ==========================================
 PROVEEDORES = {
     "anthropic":  { "nombre": "Claude",      "clave": "ANTHROPIC_API_KEY",   "tipo": "anthropic",  "base": "https://api.anthropic.com/v1" },
@@ -76,7 +72,7 @@ RONDAS_DETECTOR = 3
 OBJETIVO_IA = 0.5
 PARRAFOS_POR_RONDA = 8
 
-# [CAMBIO CRÍTICO] Temperatura muy alta para máxima impredecibilidad
+# [CAMBIO CRÍTICO 1] Temperatura muy alta para máxima impredecibilidad
 TEMP_FINAL = 1.35
 
 RITMO_MINIMO = 0.50
@@ -126,7 +122,7 @@ def _puntaje_modelo(pid, mid, creado):
     gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b", "ultra")) else 0
     return (gratis, mezcla_idioma, debil, razonador, gigante, pref, -(creado or 0))
 
-VERSION_MODELOS = "v14e"
+VERSION_MODELOS = "v15a"
 MODELOS_RESUELTOS = {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -238,7 +234,7 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
                                  {"role": "user", "content": user_text}],
                     "temperature": temperature, "top_p": 0.90, "max_tokens": max_salida,
                 }
-                # [CAMBIO CRÍTICO] Penalizaciones muy altas para romper repetición rítmica
+                # [CAMBIO CRÍTICO 2] Penalizaciones muy altas para romper repetición rítmica
                 if pid in ("groq", "openrouter", "deepseek", "openai"):
                     payload["frequency_penalty"] = 0.45
                     payload["presence_penalty"] = 0.45
@@ -407,7 +403,7 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
     return r.strip(), counts
 
 # ==========================================
-# CAPA C: AUDITORÍA AUTOMÁTICA
+# CAPA C: AUDITORÍA
 # ==========================================
 FRASES_VETADAS = [
     "al tiempo que", "a esto se suma", "herramientas como", "a su vez", "ante este panorama",
@@ -639,7 +635,7 @@ def auditar_texto(texto, referencia=None, partir=False):
     return problemas, metricas
 
 # ==========================================
-# CAPA D: VERIFICACIÓN CON DETECTORES
+# CAPA D: DETECTORES
 # ==========================================
 def detectores_activos():
     activos = []
@@ -787,9 +783,6 @@ html, body { overflow-x: clip; }
 .stApp button:focus-visible, .stApp input:focus-visible, .stApp textarea:focus-visible, .stApp [role="checkbox"]:focus-visible { outline: 2px solid var(--human) !important; outline-offset: 2px; transition: none; }
 [data-testid="stSidebar"] { background-color: var(--surface); border-right: 0; }
 [data-testid="stSidebar"] h3 { font-family: var(--font-ui); font-size: var(--t-md); font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
-.motor { background-color: var(--surface-2); border-radius: var(--r); padding: 0.75rem 0.875rem; margin: 0.25rem 0 1.25rem 0; }
-.motor-label { font-size: var(--t-sm); color: var(--ink-soft); margin: 0; }
-.motor-valor { font-size: var(--t-base); color: var(--ink); margin: 0.125rem 0 0 0; font-weight: 500; overflow-wrap: anywhere; }
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { font-size: var(--t-base); color: var(--ink); }
 [data-testid="stAlert"] { border-radius: var(--r); }
 [data-testid="stExpander"] details, [data-testid="stStatusWidget"] { border-radius: var(--r); }
@@ -801,7 +794,6 @@ html, body { overflow-x: clip; }
 .stApp h2.ritmo-titulo { font-family: var(--font-ui) !important; font-size: var(--t-md) !important; font-weight: 600 !important; color: var(--ink) !important; margin: 0 0 0.25rem 0 !important; padding: 0 !important; letter-spacing: -0.01em; line-height: 1.3 !important; }
 .stApp p.ritmo-intro { font-size: var(--t-base); color: var(--ink-soft); margin: 0.25rem 0 1.5rem 0 !important; max-width: 70ch; line-height: 1.5; }
 .ritmo-fila { display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: 2rem; align-items: end; padding: 0.875rem 0; }
-.ritmo-fila + .ritmo-fila { background-color: transparent; }
 .ritmo-nombre { font-size: var(--t-base); color: var(--ink); margin: 0; font-weight: 500; }
 .ritmo-dato { font-size: var(--t-sm); color: var(--ink-soft); margin: 0.125rem 0 0 0; font-variant-numeric: tabular-nums; }
 .ritmo svg { display: block; max-width: 100%; height: auto; }
@@ -941,7 +933,7 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# 2. BARRA LATERAL: CONFIGURACIÓN
+# 2. BARRA LATERAL
 # ==========================================
 with st.sidebar:
     st.image(LOGO_URL, width=56)
@@ -995,7 +987,7 @@ with st.sidebar:
                 opciones = mods[:30]
                 elegido = st.selectbox(nombres[pid], opciones, index=0, key=f"modelo_{pid}_{VERSION_MODELOS}")
                 MODELOS_RESUELTOS[pid] = [elegido] + [m for m in mods if m != elegido]
-    # [CAMBIO CRÍTICO] Modo profundo activado por defecto
+    # [CAMBIO CRÍTICO 5] Modo profundo activado por defecto
     modo_profundo = st.toggle(
         "🔥 Modo Profundo (Recomendado para 7-9% de detección)",
         value=True,
@@ -1034,7 +1026,7 @@ with st.sidebar:
         help="La redacción final imita el ritmo, el vocabulario y la puntuación de esta muestra. "
              "Es lo que más acerca el resultado a un texto escrito por ti.",
     ).strip()
-    # [CAMBIO CRÍTICO] Guía al usuario hacia los modelos correctos
+    # [CAMBIO CRÍTICO 6] Guía al usuario hacia los modelos correctos
     with st.expander("⚙️ Configuración para lograr 7-9% de detección", expanded=True):
         st.markdown(
             "Para lograr entre 7% y 9% en GPTZero/Copyleaks, sigue estos 4 pasos:\n\n"
@@ -1113,7 +1105,7 @@ Conserva todas las fechas, nombres, instituciones, cifras y citas tal cual.
 Devuelve ÚNICAMENTE el texto reestructurado, con los párrafos separados por una línea en blanco.
 """
 
-# [CAMBIO CRÍTICO] PROMPT_FINAL basado en tu tesis 2003 pero ultra-agresivo contra detectores
+# [CAMBIO CRÍTICO 3] PROMPT_FINAL basado en tu tesis 2003 pero ultra-agresivo contra detectores
 PROMPT_FINAL = """
 Reescribe el texto en español, imitando el estilo de una tesis universitaria chilena de 2003.
 
@@ -1176,7 +1168,7 @@ Formato: solo prosa en párrafos separados por una línea en blanco, sin rayas l
 Devuelve ÚNICAMENTE el texto corregido.
 """
 
-# [CAMBIO CRÍTICO] PROMPT_DETECTOR más agresivo con cambio sintáctico total
+# [CAMBIO CRÍTICO 4] PROMPT_DETECTOR más agresivo con cambio sintáctico total
 PROMPT_DETECTOR = """
 Eres un editor humano experto en evadir detectores de IA. Un detector marcó las ORACIONES MARCADAS porque su estructura es demasiado predecible.
 QUÉ DEBES HACER:
