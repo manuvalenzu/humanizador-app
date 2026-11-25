@@ -30,7 +30,7 @@ GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-2.0-flash")
 MAX_CARACTERES = 9000
 
 # ==========================================
-# PROVEEDORES (claves SIN espacios)
+# PROVEEDORES (CLAVES LIMPIAS, SIN ESPACIOS)
 # ==========================================
 PROVEEDORES = {
     "anthropic":  {"nombre": "Claude",     "clave": "ANTHROPIC_API_KEY",   "tipo": "anthropic", "base": "https://api.anthropic.com/v1"},
@@ -45,23 +45,22 @@ PROVEEDORES = {
 }
 
 # ==========================================
-# [LO NUEVO] MODELOS FORZADOS: SIEMPRE aparecen arriba del selector,
-# aunque la API no los liste. Son IDs válidos que la API acepta al llamarlos.
+# MODELOS FORZADOS: SIEMPRE se prueban primero
 # ==========================================
 MODELOS_FIJOS = {
-    "groq":       ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    "groq":       ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama-3.1-70b-versatile"],
     "openrouter": ["meta-llama/llama-3.3-70b-instruct", "qwen/qwen-2.5-72b-instruct", "mistralai/mistral-large"],
     "nvidia":     ["mistralai/mistral-large-4-1t-a52b", "meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-v3"],
-    "deepseek":   ["deepseek-chat"],
+    "deepseek":   ["deepseek-chat", "deepseek-flash"],
     "gemini":     ["gemini-2.0-flash"],
 }
 
-# Cadena automática de mejor a peor para la redacción final
-CADENA_FINAL = ["groq", "openrouter", "nvidia", "deepseek", "gemini", "anthropic", "openai", "cerebras", "mistral"]
-ORDEN_CALIDAD = CADENA_FINAL
+# Cadena automática: la app prueba en este orden
+CADENA_FINAL = ["groq", "openrouter", "nvidia", "deepseek", "gemini"]
+ORDEN_CALIDAD = CADENA_FINAL + ["anthropic", "openai", "cerebras", "mistral"]
 ORDEN_VELOCIDAD = ["groq", "cerebras", "gemini", "openai", "anthropic", "deepseek", "mistral", "nvidia", "openrouter"]
 
-TIEMPO_MAXIMO = {"intermedio": 20, "final": 50}
+TIEMPO_MAXIMO = {"intermedio": 20, "final": 60}
 
 @st.cache_resource(show_spinner=False)
 def _proveedores_pausados():
@@ -125,12 +124,11 @@ def _puntaje_modelo(pid, mid, creado):
     gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b")) else 0
     return (1, gratis, mezcla, debil, gigante, -(creado or 0))
 
-VERSION_MODELOS = "v18a"
+VERSION_MODELOS = "v19a"
 MODELOS_RESUELTOS = {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
-    """Lista de modelos: los forzados SIEMPRE van primero, aunque la API no los devuelva."""
     fijos = MODELOS_FIJOS.get(pid, [])
     if pid == "gemini":
         return [GEMINI_MODEL] + fijos
@@ -209,7 +207,7 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90, es_f
     if not modelos:
         raise RuntimeError(f"{p['nombre']}: no se encontraron modelos de texto en la cuenta.")
     ultimo_error = ""
-    for modelo in modelos[:2]:
+    for modelo in modelos[:3]:
         try:
             if p["tipo"] == "anthropic":
                 headers = {"x-api-key": clave, "anthropic-version": "2023-06-01", "content-type": "application/json"}
@@ -950,7 +948,7 @@ with st.sidebar:
     modelo_final_id = None
     proveedores_mezcla = []
     if conectados:
-        # [AUTOMÁTICO] El mejor proveedor disponible, en orden Groq > OpenRouter > NVIDIA > DeepSeek...
+        # AUTOMÁTICO: elige el mejor proveedor disponible
         por_defecto = next((p for p in CADENA_FINAL if p in conectados), conectados[0])
         modelo_final_id = st.selectbox(
             "Modelo para la redacción final",
@@ -1103,14 +1101,16 @@ Conserva todas las fechas, nombres, instituciones, cifras y citas tal cual.
 Devuelve ÚNICAMENTE el texto reestructurado, con los párrafos separados por una línea en blanco.
 """
 
+# PROMPT_FINAL basado en la tesis de Manuel Valenzuela Saavedra (2003)
 PROMPT_FINAL = """
-Reescribe el texto en español, imitando el estilo de una tesis universitaria o artículo académico serio de principios de los 2000s.
+Reescribe el texto en español, imitando el estilo de una tesis universitaria chilena de principios de los 2000s.
 
-ESTILO OBJETIVO (basado en escritura académica humana real):
+ESTILO OBJETIVO (basado en escritura académica humana real de tesis de 2003):
 - Registro formal pero fluido: usa "no resistió", "se vio sobrepasada", "resulta problemático" en lugar de jerga.
-- Conectores naturales y variados: "De acuerdo con lo anterior", "Por consiguiente", "No obstante", "En este contexto", "Cabe señalar".
-- Vocabulario preciso: "prospectivamente", "tuición", "antagónicos", "coyuntural", "delineamientos".
-- Citas entre paréntesis integradas naturalmente: "(Rossi, 1971)".
+- Conectores naturales y variados: "De acuerdo con lo anterior", "Por consiguiente", "No obstante", "En este contexto", "Cabe señalar", "De lo anterior se puede desprender", "Es así como", "De cualquier manera que éstas sean clasificadas".
+- Vocabulario preciso y académico: "prospectivamente", "tuición", "antagónicos", "coyuntural", "delineamientos", "emplazamiento", "condicionantes y exigencias", "tejido social", "poder adquisitivo".
+- Citas entre paréntesis integradas naturalmente: "(Rossi, 1971)", "(Bernuolli, 1951)".
+- Tono impersonal con "debemos"/"es necesario": "debemos necesariamente considerar", "es necesario comprender".
 
 REGLAS CRÍTICAS PARA BAJAR DETECCIÓN (sin perder el tono académico):
 
@@ -1140,7 +1140,7 @@ Devuelve SOLO el texto reescrito.
 """
 
 PROMPT_RAPIDO = PROMPT_FINAL.replace(
-    "ESTILO OBJETIVO (basado en escritura académica humana real):",
+    "ESTILO OBJETIVO (basado en escritura académica humana real de tesis de 2003):",
     "ESTILO OBJETIVO (tesis chilena 2003, aplicado en esta misma pasada):",
 ).replace("Reescribe el texto en español", "Reescribe el texto")
 
