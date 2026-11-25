@@ -21,7 +21,6 @@ st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wid
 # LEE LAS CLAVES DESDE LOS SECRETOS DE STREAMLIT
 # ==========================================
 def leer_secreto(nombre, defecto=None):
-    """Lee un secreto sin romper la app si no existe secrets.toml."""
     try:
         valor = st.secrets.get(nombre, defecto)
         return valor.strip() if isinstance(valor, str) else valor
@@ -29,8 +28,6 @@ def leer_secreto(nombre, defecto=None):
         return defecto
 
 GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-3.6-flash")
-
-# Límite del texto de entrada (caracteres, contando espacios)
 MAX_CARACTERES = 9000
 
 # ==========================================
@@ -48,16 +45,11 @@ PROVEEDORES = {
     "openrouter": { "nombre": "OpenRouter",  "clave": "OPENROUTER_API_KEY",  "tipo": "openai",     "base": "https://openrouter.ai/api/v1" },
 }
 
-# Orden por defecto para elegir el modelo de la redacción final
 ORDEN_CALIDAD = ["anthropic", "openai", "deepseek", "nvidia", "mistral", "gemini", "groq", "cerebras", "openrouter"]
-
-# Orden por velocidad: los pasos intermedios usan primero los más rápidos
 ORDEN_VELOCIDAD = ["groq", "cerebras", "gemini", "openai", "anthropic", "deepseek", "mistral", "nvidia", "openrouter"]
 
-# Tiempo máximo por llamada (segundos)
 TIEMPO_MAXIMO = {"intermedio": 30, "final": 60}
 
-# Proveedores en pausa
 @st.cache_resource(show_spinner=False)
 def _proveedores_pausados():
     return {}
@@ -70,14 +62,12 @@ MAX_ESPERAS = 2
 PAUSA_CLAVE = 1800
 
 class ProveedorNoDisponible(RuntimeError):
-    """Error que deja al proveedor en pausa: cuota agotada, lentitud o clave rechazada."""
     def __init__(self, mensaje, pausa):
         super().__init__(mensaje)
         self.pausa = pausa
 
 CLAVES = {pid: leer_secreto(p["clave"]) for pid, p in PROVEEDORES.items()}
 
-# Detectores con API pública
 GPTZERO_API_KEY = leer_secreto("GPTZERO_API_KEY")
 COPYLEAKS_EMAIL = leer_secreto("COPYLEAKS_EMAIL")
 COPYLEAKS_API_KEY = leer_secreto("COPYLEAKS_API_KEY")
@@ -86,13 +76,11 @@ RONDAS_DETECTOR = 3
 OBJETIVO_IA = 0.5
 PARRAFOS_POR_RONDA = 8
 
-# [MEJORA 0%] Temperatura alta para romper la predictibilidad
-TEMP_FINAL = 1.20
+# [CAMBIO CRÍTICO] Temperatura muy alta para máxima impredecibilidad
+TEMP_FINAL = 1.35
 
-# Variación mínima del largo de las oraciones
 RITMO_MINIMO = 0.50
 
-# Modelos excluidos
 EXCLUIDOS = (
     "whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision", "audio",
     "compound", "allam", "realtime", "image", "transcribe", "search", "moderation", "ocr",
@@ -102,11 +90,9 @@ EXCLUIDOS = (
     "neva", "fuyu", "paligemma", "nemoretriever", "riva", "cosmos", "bge", "e5-", "arctic-embed"
 )
 
-# Modelos chicos
 PATRON_CHICO = re.compile(r"(?<![a-z0-9.])[1-9](?:\.\d)?b\b")
 DEBILES = ("mini", "nano", "small", "tiny", "lite", "instant", "haiku", "ministral")
 
-# Familias de modelos de texto
 FAMILIAS_TEXTO = (
     "llama", "mistral", "mixtral", "qwen", "deepseek", "gemma", "kimi", "glm", "nemotron",
     "phi-", "minimax", "gpt-oss", "command", "hermes", "granite", "olmo", "jamba", "seed"
@@ -140,12 +126,11 @@ def _puntaje_modelo(pid, mid, creado):
     gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b", "ultra")) else 0
     return (gratis, mezcla_idioma, debil, razonador, gigante, pref, -(creado or 0))
 
-VERSION_MODELOS = "v14d"
+VERSION_MODELOS = "v14e"
 MODELOS_RESUELTOS = {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
-    """Lista de modelos de chat de la cuenta, del mejor al peor."""
     fijos = leer_secreto(f"{pid.upper()}_MODEL")
     if fijos:
         return [m.strip() for m in str(fijos).split(",") if m.strip()]
@@ -183,7 +168,6 @@ def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
     return [c[0] for c in candidatos]
 
 def _post_con_ajustes(url, headers, payload, tipo, limite=90):
-    """POST que se adapta a lo que cada modelo acepta."""
     ultimo = None
     for intento in range(5):
         resp = requests.post(url, headers=headers, json=payload, timeout=(10, limite))
@@ -217,7 +201,6 @@ def _post_con_ajustes(url, headers, payload, tipo, limite=90):
     return ultimo
 
 def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
-    """Llama a un proveedor probando sus mejores modelos."""
     p = PROVEEDORES[pid]
     clave = CLAVES.get(pid)
     if not clave:
@@ -253,12 +236,12 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
                     "model": modelo,
                     "messages": [{"role": "system", "content": system_prompt},
                                  {"role": "user", "content": user_text}],
-                    "temperature": temperature, "top_p": 0.92, "max_tokens": max_salida,
+                    "temperature": temperature, "top_p": 0.90, "max_tokens": max_salida,
                 }
-                # [MEJORA 0%] Penalizaciones altas para romper repetición rítmica
+                # [CAMBIO CRÍTICO] Penalizaciones muy altas para romper repetición rítmica
                 if pid in ("groq", "openrouter", "deepseek", "openai"):
-                    payload["frequency_penalty"] = 0.35
-                    payload["presence_penalty"] = 0.35
+                    payload["frequency_penalty"] = 0.45
+                    payload["presence_penalty"] = 0.45
                 if "gpt-oss" in modelo.lower():
                     payload["reasoning_effort"] = "low"
                 if pid == "deepseek":
@@ -294,16 +277,12 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
     raise RuntimeError(ultimo_error)
 
 def quitar_razonamiento(texto):
-    """Elimina el razonamiento entre <think>... </think>."""
     if not texto:
         return ""
     texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)
     texto = re.sub(r"^.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)
     return texto.strip()
 
-# ==========================================
-# LLAMADA A GEMINI
-# ==========================================
 def llamar_gemini(client, contents, system_instruction):
     try:
         config = types.GenerateContentConfig(
@@ -761,7 +740,7 @@ def oraciones_marcadas(parrafo, frases):
     return marcadas
 
 # ==========================================
-# DISEÑO: tokens y estilos
+# DISEÑO
 # ==========================================
 st.markdown("""
 <style>
@@ -1016,7 +995,7 @@ with st.sidebar:
                 opciones = mods[:30]
                 elegido = st.selectbox(nombres[pid], opciones, index=0, key=f"modelo_{pid}_{VERSION_MODELOS}")
                 MODELOS_RESUELTOS[pid] = [elegido] + [m for m in mods if m != elegido]
-    # [MEJORA 0%] Modo profundo activado por defecto
+    # [CAMBIO CRÍTICO] Modo profundo activado por defecto
     modo_profundo = st.toggle(
         "🔥 Modo Profundo (Recomendado para 7-9% de detección)",
         value=True,
@@ -1055,11 +1034,11 @@ with st.sidebar:
         help="La redacción final imita el ritmo, el vocabulario y la puntuación de esta muestra. "
              "Es lo que más acerca el resultado a un texto escrito por ti.",
     ).strip()
-    # [MEJORA 0%] Guía al usuario hacia los modelos correctos
+    # [CAMBIO CRÍTICO] Guía al usuario hacia los modelos correctos
     with st.expander("⚙️ Configuración para lograr 7-9% de detección", expanded=True):
         st.markdown(
             "Para lograr entre 7% y 9% en GPTZero/Copyleaks, sigue estos 4 pasos:\n\n"
-            "1. **Elige el modelo correcto**: En el menú superior, selecciona **OpenRouter** o **Groq** y elige un modelo como `llama-3.3-70b-instruct` o `qwen-2.5-72b-instruct`. Estos modelos tienen una 'huella' estadística que confunde a los detectores.\n"
+            "1. **Elige el modelo correcto**: En el menú superior, selecciona **OpenRouter** o **Groq** y elige un modelo como `qwen/qwen-2.5-72b-instruct` o `meta-llama/llama-3.3-70b-instruct`. Qwen tiene una 'huella' estadística que confunde más a los detectores.\n"
             "2. **Activa el Modo Profundo**: Ya viene activado. La retrotraducción (ES→EN→ES) rompe la estructura sintáctica de la IA.\n"
             "3. **Pega tu Muestra de Estilo**: Escribe 2 o 3 párrafos tuyos abajo. El modelo imitará tu entropía personal, que es lo que ningún detector puede predecir.\n"
             "4. **Usa 2 pasadas**: Ya viene configurado. La segunda pasada refina el resultado.\n\n"
@@ -1134,12 +1113,12 @@ Conserva todas las fechas, nombres, instituciones, cifras y citas tal cual.
 Devuelve ÚNICAMENTE el texto reestructurado, con los párrafos separados por una línea en blanco.
 """
 
-# [MEJORA 0%] PROMPT_FINAL basado en el estilo de la tesis de Manuel Valenzuela Saavedra (2003)
+# [CAMBIO CRÍTICO] PROMPT_FINAL basado en tu tesis 2003 pero ultra-agresivo contra detectores
 PROMPT_FINAL = """
-Reescribe el texto en español académico, imitando el estilo de una tesis universitaria chilena de principios de los 2000s.
+Reescribe el texto en español, imitando el estilo de una tesis universitaria chilena de 2003.
 
-ESTILO OBJETIVO (analizado de una tesis real de 2003):
-- Vocabulario académico accesible: "prospectivamente", "antagónicos", "coyuntural", "tuición", "delineamientos", "emplazamiento"
+ESTILO OBJETIVO (analizado de tu tesis real de 2003):
+- Vocabulario académico accesible: "prospectivamente", "antagónicos", "coyuntural", "tuición", "delineamientos"
 - Conectores formales pero naturales: "De acuerdo con lo anterior", "Por lo tanto", "Sin embargo", "De esta manera", "Por otro lado", "En este contexto", "De lo anterior se puede desprender", "Es así como"
 - Tono impersonal con "debemos"/"es necesario": "debemos necesariamente considerar", "es necesario comprender"
 - Citas entre paréntesis: "(Rossi, 1971)", "(Bernuolli, 1951)"
@@ -1147,23 +1126,44 @@ ESTILO OBJETIVO (analizado de una tesis real de 2003):
 - Estructura: introducción del concepto → desarrollo → conclusión parcial
 - Puntuación: muchas comas, pocos punto y coma, paréntesis para citas
 
-REGLAS ANTI-DETECTOR (obligatorias para bajar a 7-9%):
-1. BURSTINESS EXTREMA: alterna oraciones ultra-cortas (6-10 palabras) con oraciones largas y complejas (30-40 palabras). Nunca tres seguidas de largo similar.
-2. INICIOS VARIADOS: máximo 30% de oraciones pueden empezar con "El/La/Los/Las". Usa: verbos ("Resulta necesario..."), adverbios ("Tradicionalmente,..."), preposiciones ("En el contexto de..."), nombres propios, cifras.
-3. PROHIBIDO: "se caracterizó por", "a medida que", "supuso una transformación", "cuyas repercusiones", "¿Por qué estudiar esto? Porque...". Reemplaza con verbos concretos y acciones específicas.
-4. CERO MORALEJA FINAL: el último párrafo termina con un dato, una fecha, un nombre o una acción concreta. Nunca con "esto nos enseña", "permite entender", "es importante recordar".
-5. PUNTUACIÓN VARIADA: usa al menos 2 paréntesis (para citas), 1 punto y coma y 1 pregunta retórica en todo el texto.
-6. MEZCLA VOCABULARIO: 1 palabra coloquial cada 10 académicas. Ejemplo: "se armó un problema" en vez de "se generó una problemática".
+REGLAS CRÍTICAS PARA BAJAR DETECCIÓN A 7-9% (si no las cumples, el texto falla):
 
-CONSERVA todas las fechas, nombres, cifras y lugares TAL CUAL. No resumas. No agregues información nueva.
+1. BURSTINESS EXTREMA (la más importante):
+   - Escribe UNA oración de 6-10 palabras. Punto.
+   - Luego UNA de 25-35 palabras con incisos.
+   - Luego UNA de 8 palabras.
+   - Luego UNA de 20 palabras.
+   - NUNCA dos oraciones seguidas de largo similar.
+
+2. VOCABULARIO COLOQUIAL MEZCLADO:
+   - Usa 1 palabra de calle cada 5 académicas.
+   - Ejemplos: "se armó", "no aguantó", "la cosa se puso fea"
+   - En vez de "reconfiguración drástica" → "cambió todo de golpe"
+   - En vez de "causa subyacente" → "la razón de fondo"
+
+3. PROHIBIDO (si usas estas, el detector te marca):
+   - "reconfiguración", "subyacente", "maraña", "drástica", "expansionista"
+   - "además", "así como", "por lo tanto" (más de 1 vez)
+   - Oraciones de más de 30 palabras sin punto y coma
+
+4. INICIOS VARIADOS:
+   - Máximo 25% de oraciones pueden empezar con "El/La/Los/Las"
+   - Abre con: verbos ("Resulta necesario..."), cifras ("En 1914,..."), nombres propios, preguntas
+
+5. PUNTUACIÓN VIVA:
+   - Usa al menos 3 paréntesis para citas
+   - Usa 2 puntos y coma
+   - Usa 1 pregunta retórica
+
+CONSERVA todas las fechas, nombres y cifras TAL CUAL. No resumas.
 
 Devuelve SOLO el texto reescrito.
 """
 
 PROMPT_RAPIDO = PROMPT_FINAL.replace(
-    "ESTILO OBJETIVO (analizado de una tesis real de 2003):",
+    "ESTILO OBJETIVO (analizado de tu tesis real de 2003):",
     "ESTILO OBJETIVO (tesis chilena 2003, aplicado en esta misma pasada):",
-).replace("Reescribe el texto en español académico", "Reescribe el texto")
+).replace("Reescribe el texto en español", "Reescribe el texto")
 
 PROMPT_CORRECCION = """
 Eres un corrector de estilo. Te paso el texto ORIGINAL, un TEXTO reescrito y una lista de PROBLEMAS detectados por una revisión automática.
@@ -1176,7 +1176,7 @@ Formato: solo prosa en párrafos separados por una línea en blanco, sin rayas l
 Devuelve ÚNICAMENTE el texto corregido.
 """
 
-# [MEJORA 0%] PROMPT_DETECTOR más agresivo con cambio sintáctico total
+# [CAMBIO CRÍTICO] PROMPT_DETECTOR más agresivo con cambio sintáctico total
 PROMPT_DETECTOR = """
 Eres un editor humano experto en evadir detectores de IA. Un detector marcó las ORACIONES MARCADAS porque su estructura es demasiado predecible.
 QUÉ DEBES HACER:
