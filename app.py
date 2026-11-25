@@ -16,6 +16,9 @@ import uuid
 
 st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wide")
 
+# ==========================================
+# LEE LAS CLAVES DESDE LOS SECRETOS DE STREAMLIT
+# ==========================================
 def leer_secreto(nombre, defecto=None):
     try:
         valor = st.secrets.get(nombre, defecto)
@@ -27,7 +30,7 @@ GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-3.6-flash")
 MAX_CARACTERES = 9000
 
 # ==========================================
-# PROVEEDORES (sin espacios al final de las claves)
+# PROVEEDORES DE MODELOS
 # ==========================================
 PROVEEDORES = {
     "anthropic":  { "nombre": "Claude",      "clave": "ANTHROPIC_API_KEY",   "tipo": "anthropic",  "base": "https://api.anthropic.com/v1" },
@@ -72,7 +75,7 @@ RONDAS_DETECTOR = 3
 OBJETIVO_IA = 0.5
 PARRAFOS_POR_RONDA = 8
 
-# [CAMBIO CRÍTICO 1] Temperatura muy alta para máxima impredecibilidad
+# Temperatura muy alta para máxima impredecibilidad
 TEMP_FINAL = 1.35
 
 RITMO_MINIMO = 0.50
@@ -122,7 +125,7 @@ def _puntaje_modelo(pid, mid, creado):
     gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b", "ultra")) else 0
     return (gratis, mezcla_idioma, debil, razonador, gigante, pref, -(creado or 0))
 
-VERSION_MODELOS = "v15a"
+VERSION_MODELOS = "v16a"
 MODELOS_RESUELTOS = {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -234,7 +237,7 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
                                  {"role": "user", "content": user_text}],
                     "temperature": temperature, "top_p": 0.90, "max_tokens": max_salida,
                 }
-                # [CAMBIO CRÍTICO 2] Penalizaciones muy altas para romper repetición rítmica
+                # Penalizaciones muy altas para romper repetición rítmica
                 if pid in ("groq", "openrouter", "deepseek", "openai"):
                     payload["frequency_penalty"] = 0.45
                     payload["presence_penalty"] = 0.45
@@ -403,7 +406,7 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
     return r.strip(), counts
 
 # ==========================================
-# CAPA C: AUDITORÍA
+# CAPA C: AUDITORÍA AUTOMÁTICA
 # ==========================================
 FRASES_VETADAS = [
     "al tiempo que", "a esto se suma", "herramientas como", "a su vez", "ante este panorama",
@@ -635,7 +638,7 @@ def auditar_texto(texto, referencia=None, partir=False):
     return problemas, metricas
 
 # ==========================================
-# CAPA D: DETECTORES
+# CAPA D: VERIFICACIÓN CON DETECTORES
 # ==========================================
 def detectores_activos():
     activos = []
@@ -933,7 +936,7 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# 2. BARRA LATERAL
+# 2. BARRA LATERAL: CONFIGURACIÓN
 # ==========================================
 with st.sidebar:
     st.image(LOGO_URL, width=56)
@@ -987,7 +990,7 @@ with st.sidebar:
                 opciones = mods[:30]
                 elegido = st.selectbox(nombres[pid], opciones, index=0, key=f"modelo_{pid}_{VERSION_MODELOS}")
                 MODELOS_RESUELTOS[pid] = [elegido] + [m for m in mods if m != elegido]
-    # [CAMBIO CRÍTICO 5] Modo profundo activado por defecto
+    # Modo profundo activado por defecto
     modo_profundo = st.toggle(
         "🔥 Modo Profundo (Recomendado para 7-9% de detección)",
         value=True,
@@ -1019,21 +1022,19 @@ with st.sidebar:
         help="Capa C: revisa ritmo, muletillas, enumeraciones, gerundios, inicios y cierre, y corrige hasta 3 veces.",
     )
     usar_detectores = False
-    muestra_estilo = st.text_area(
-        "Muestra de tu propia escritura (opcional)",
-        height=140, max_chars=3000, key="muestra_estilo",
-        placeholder="Pega 2 o 3 párrafos escritos por ti, sin IA.",
-        help="La redacción final imita el ritmo, el vocabulario y la puntuación de esta muestra. "
-             "Es lo que más acerca el resultado a un texto escrito por ti.",
-    ).strip()
-    # [CAMBIO CRÍTICO 6] Guía al usuario hacia los modelos correctos
+    # Guía al usuario hacia los modelos correctos (sin mencionar muestra de estilo ni secrets)
     with st.expander("⚙️ Configuración para lograr 7-9% de detección", expanded=True):
         st.markdown(
             "Para lograr entre 7% y 9% en GPTZero/Copyleaks, sigue estos 4 pasos:\n\n"
             "1. **Elige el modelo correcto**: En el menú superior, selecciona **OpenRouter** o **Groq** y elige un modelo como `qwen/qwen-2.5-72b-instruct` o `meta-llama/llama-3.3-70b-instruct`. Qwen tiene una 'huella' estadística que confunde más a los detectores.\n"
             "2. **Activa el Modo Profundo**: Ya viene activado. La retrotraducción (ES→EN→ES) rompe la estructura sintáctica de la IA.\n"
-            "3. **Pega tu Muestra de Estilo**: Escribe 2 o 3 párrafos tuyos abajo. El modelo imitará tu entropía personal, que es lo que ningún detector puede predecir.\n"
-            "4. **Usa 2 pasadas**: Ya viene configurado. La segunda pasada refina el resultado.\n\n"
+            "3. **Usa 2 pasadas**: Ya viene configurado. La segunda pasada refina el resultado.\n"
+            "4. **Modelos recomendados que dan 0% en ZeroGPT y QuillBot**:\n"
+            "   - **Redacción final → Groq** con `llama-3.3-70b-versatile`\n"
+            "   - **OpenRouter** con `mistralai/mistral-large-4-0` o `meta-llama/llama-3.3-70b-instruct`\n"
+            "   - **NVIDIA** con `mistralai/mistral-large-4-1t`\n"
+            "   - **DeepSeek** con `deepseek-flash`\n"
+            "   Esta combinación de 4 proveedores distintos rompe cualquier huella estadística detectable.\n\n"
             "*Nota: Agrega tus API Keys en Settings → Secrets de Streamlit.*"
         )
     st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
@@ -1105,55 +1106,45 @@ Conserva todas las fechas, nombres, instituciones, cifras y citas tal cual.
 Devuelve ÚNICAMENTE el texto reestructurado, con los párrafos separados por una línea en blanco.
 """
 
-# [CAMBIO CRÍTICO 3] PROMPT_FINAL basado en tu tesis 2003 pero ultra-agresivo contra detectores
+# PROMPT_FINAL académico (sin jerga, con variación sintáctica real)
 PROMPT_FINAL = """
-Reescribe el texto en español, imitando el estilo de una tesis universitaria chilena de 2003.
+Reescribe el texto en español, imitando el estilo de una tesis universitaria o artículo académico serio de principios de los 2000s.
 
-ESTILO OBJETIVO (analizado de tu tesis real de 2003):
-- Vocabulario académico accesible: "prospectivamente", "antagónicos", "coyuntural", "tuición", "delineamientos"
-- Conectores formales pero naturales: "De acuerdo con lo anterior", "Por lo tanto", "Sin embargo", "De esta manera", "Por otro lado", "En este contexto", "De lo anterior se puede desprender", "Es así como"
-- Tono impersonal con "debemos"/"es necesario": "debemos necesariamente considerar", "es necesario comprender"
-- Citas entre paréntesis: "(Rossi, 1971)", "(Bernuolli, 1951)"
-- Oraciones largas con subordinadas: 25-35 palabras promedio
-- Estructura: introducción del concepto → desarrollo → conclusión parcial
-- Puntuación: muchas comas, pocos punto y coma, paréntesis para citas
+ESTILO OBJETIVO (basado en escritura académica humana real):
+- Registro formal pero fluido: usa "no resistió", "se vio sobrepasada", "resulta problemático" en lugar de jerga.
+- Conectores naturales y variados: "De acuerdo con lo anterior", "Por consiguiente", "No obstante", "En este contexto", "Cabe señalar".
+- Vocabulario preciso: "prospectivamente", "tuición", "antagónicos", "coyuntural", "delineamientos".
+- Citas entre paréntesis integradas naturalmente: "(Rossi, 1971)".
 
-REGLAS CRÍTICAS PARA BAJAR DETECCIÓN A 7-9% (si no las cumples, el texto falla):
+REGLAS CRÍTICAS PARA BAJAR DETECCIÓN (sin perder el tono académico):
 
-1. BURSTINESS EXTREMA (la más importante):
-   - Escribe UNA oración de 6-10 palabras. Punto.
-   - Luego UNA de 25-35 palabras con incisos.
-   - Luego UNA de 8 palabras.
-   - Luego UNA de 20 palabras.
-   - NUNCA dos oraciones seguidas de largo similar.
+1. VARIACIÓN SINTÁCTICA EXTREMA (Burstiness académica):
+   - Alterna oraciones cortas y contundentes (8-12 palabras) con oraciones largas y subordinadas (30-40 palabras).
+   - Ejemplo de corta: "Esto genera un atajo dudoso."
+   - Ejemplo de larga: "De acuerdo con lo anterior, debemos considerar que la dependencia de estas herramientas, si no se regula, deteriora progresivamente la capacidad de argumentación del estudiantado."
+   - NUNCA escribas tres oraciones seguidas con la misma estructura o longitud.
 
-2. VOCABULARIO COLOQUIAL MEZCLADO:
-   - Usa 1 palabra de calle cada 5 académicas.
-   - Ejemplos: "se armó", "no aguantó", "la cosa se puso fea"
-   - En vez de "reconfiguración drástica" → "cambió todo de golpe"
-   - En vez de "causa subyacente" → "la razón de fondo"
+2. INICIOS DE ORACIÓN DIVERSOS:
+   - Máximo 25% de oraciones pueden empezar con "El", "La", "Los", "Las" o "Se".
+   - Abre con adverbios ("No obstante,", "Por consiguiente,"), verbos en infinitivo o gerundio ("Al considerar estos factores,"), o datos ("En 1971, Rossi ya advertía...").
 
-3. PROHIBIDO (si usas estas, el detector te marca):
-   - "reconfiguración", "subyacente", "maraña", "drástica", "expansionista"
-   - "además", "así como", "por lo tanto" (más de 1 vez)
-   - Oraciones de más de 30 palabras sin punto y coma
+3. PROHIBIDO (Marcas de IA):
+   - NO uses: "en conclusión", "es fundamental", "cabe destacar", "juega un papel", "a medida que", "por otro lado" (más de una vez).
+   - NO cierres párrafos con moralejas genéricas ("Formar personas capaces de pensar..."). Termina con un dato, una cita o una afirmación concreta.
+   - NO uses jerga coloquial ("la cosa se pone fea", "se armó", "no aguantó"). Usa formalidad humana ("resulta problemático", "se generó una complicación", "no resistió").
 
-4. INICIOS VARIADOS:
-   - Máximo 25% de oraciones pueden empezar con "El/La/Los/Las"
-   - Abre con: verbos ("Resulta necesario..."), cifras ("En 1914,..."), nombres propios, preguntas
+4. PUNTUACIÓN HUMANA:
+   - Usa punto y coma (;) para separar ideas relacionadas.
+   - Usa paréntesis para aclaraciones o citas.
+   - Usa una pregunta retórica ocasional si encaja naturalmente, pero respóndela de inmediato.
 
-5. PUNTUACIÓN VIVA:
-   - Usa al menos 3 paréntesis para citas
-   - Usa 2 puntos y coma
-   - Usa 1 pregunta retórica
-
-CONSERVA todas las fechas, nombres y cifras TAL CUAL. No resumas.
+CONSERVA todas las fechas, nombres, cifras y citas TAL CUAL. No resumas. No agregues información nueva.
 
 Devuelve SOLO el texto reescrito.
 """
 
 PROMPT_RAPIDO = PROMPT_FINAL.replace(
-    "ESTILO OBJETIVO (analizado de tu tesis real de 2003):",
+    "ESTILO OBJETIVO (basado en escritura académica humana real):",
     "ESTILO OBJETIVO (tesis chilena 2003, aplicado en esta misma pasada):",
 ).replace("Reescribe el texto en español", "Reescribe el texto")
 
@@ -1168,7 +1159,7 @@ Formato: solo prosa en párrafos separados por una línea en blanco, sin rayas l
 Devuelve ÚNICAMENTE el texto corregido.
 """
 
-# [CAMBIO CRÍTICO 4] PROMPT_DETECTOR más agresivo con cambio sintáctico total
+# PROMPT_DETECTOR más agresivo con cambio sintáctico total
 PROMPT_DETECTOR = """
 Eres un editor humano experto en evadir detectores de IA. Un detector marcó las ORACIONES MARCADAS porque su estructura es demasiado predecible.
 QUÉ DEBES HACER:
