@@ -48,16 +48,11 @@ PROVEEDORES = {
     "openrouter": { "nombre": "OpenRouter",  "clave": "OPENROUTER_API_KEY",  "tipo": "openai",     "base": "https://openrouter.ai/api/v1" },
 }
 
-# Orden por defecto para elegir el modelo de la redacción final
 ORDEN_CALIDAD = ["anthropic", "openai", "deepseek", "nvidia", "mistral", "gemini", "groq", "cerebras", "openrouter"]
-
-# Orden por velocidad: los pasos intermedios usan primero los más rápidos
 ORDEN_VELOCIDAD = ["groq", "cerebras", "gemini", "openai", "anthropic", "deepseek", "mistral", "nvidia", "openrouter"]
 
-# Tiempo máximo por llamada (segundos)
 TIEMPO_MAXIMO = {"intermedio": 30, "final": 60}
 
-# Proveedores en pausa
 @st.cache_resource(show_spinner=False)
 def _proveedores_pausados():
     return {}
@@ -77,7 +72,6 @@ class ProveedorNoDisponible(RuntimeError):
 
 CLAVES = {pid: leer_secreto(p["clave"]) for pid, p in PROVEEDORES.items()}
 
-# Detectores con API pública
 GPTZERO_API_KEY = leer_secreto("GPTZERO_API_KEY")
 COPYLEAKS_EMAIL = leer_secreto("COPYLEAKS_EMAIL")
 COPYLEAKS_API_KEY = leer_secreto("COPYLEAKS_API_KEY")
@@ -86,13 +80,14 @@ RONDAS_DETECTOR = 3
 OBJETIVO_IA = 0.5
 PARRAFOS_POR_RONDA = 8
 
-# [MEJORA 0%] Temperatura alta para romper la predictibilidad
-TEMP_FINAL = 1.20
+# [PERFIL TESIS 2003] Tu tesis tiene vocabulario impredecible pero estructura conservadora:
+# temperatura alta solo rompe la previsibilidad léxica sin desarmar tus frases largas.
+TEMP_FINAL = 1.15
 
-# Variación mínima del largo de las oraciones
-RITMO_MINIMO = 0.50
+# [PERFIL TESIS 2003] Tus párrafos académicos tienen variación MODERADA, no extrema.
+# Forzar burstiness de blog delataría más de lo que ayuda.
+RITMO_MINIMO = 0.45
 
-# Modelos excluidos
 EXCLUIDOS = (
     "whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision", "audio",
     "compound", "allam", "realtime", "image", "transcribe", "search", "moderation", "ocr",
@@ -102,11 +97,9 @@ EXCLUIDOS = (
     "neva", "fuyu", "paligemma", "nemoretriever", "riva", "cosmos", "bge", "e5-", "arctic-embed"
 )
 
-# Modelos chicos
 PATRON_CHICO = re.compile(r"(?<![a-z0-9.])[1-9](?:\.\d)?b\b")
 DEBILES = ("mini", "nano", "small", "tiny", "lite", "instant", "haiku", "ministral")
 
-# Familias de modelos de texto
 FAMILIAS_TEXTO = (
     "llama", "mistral", "mixtral", "qwen", "deepseek", "gemma", "kimi", "glm", "nemotron",
     "phi-", "minimax", "gpt-oss", "command", "hermes", "granite", "olmo", "jamba", "seed"
@@ -140,7 +133,7 @@ def _puntaje_modelo(pid, mid, creado):
     gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b", "ultra")) else 0
     return (gratis, mezcla_idioma, debil, razonador, gigante, pref, -(creado or 0))
 
-VERSION_MODELOS = "v14d"
+VERSION_MODELOS = "v15a"
 MODELOS_RESUELTOS = {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -183,7 +176,7 @@ def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
     return [c[0] for c in candidatos]
 
 def _post_con_ajustes(url, headers, payload, tipo, limite=90):
-    """POST que se adapta a lo que cada modelo acepta."""
+    """POST que se adapta a lo que cada modelo acepta (temperatura, tokens, penalizaciones)."""
     ultimo = None
     for intento in range(5):
         resp = requests.post(url, headers=headers, json=payload, timeout=(10, limite))
@@ -217,7 +210,7 @@ def _post_con_ajustes(url, headers, payload, tipo, limite=90):
     return ultimo
 
 def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
-    """Llama a un proveedor probando sus mejores modelos."""
+    """Llama a un proveedor probando sus mejores modelos. Devuelve (texto, 'Proveedor (modelo)')."""
     p = PROVEEDORES[pid]
     clave = CLAVES.get(pid)
     if not clave:
@@ -253,12 +246,14 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
                     "model": modelo,
                     "messages": [{"role": "system", "content": system_prompt},
                                  {"role": "user", "content": user_text}],
-                    "temperature": temperature, "top_p": 0.92, "max_tokens": max_salida,
+                    "temperature": temperature, "top_p": 0.95, "max_tokens": max_salida,
                 }
-                # [MEJORA 0%] Penalizaciones altas para romper repetición rítmica
+                # [PERFIL TESIS 2003] Penalizaciones 0.35/0.3: tu tesis repite términos técnicos
+                # ("suelo urbano", "calidad de vida") sin sinónimos forzados; la penalización media
+                # mantiene el léxico vivo sin romper la cohesión del párrafo.
                 if pid in ("groq", "openrouter", "deepseek", "openai"):
                     payload["frequency_penalty"] = 0.35
-                    payload["presence_penalty"] = 0.35
+                    payload["presence_penalty"] = 0.3
                 if "gpt-oss" in modelo.lower():
                     payload["reasoning_effort"] = "low"
                 if pid == "deepseek":
@@ -294,16 +289,13 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
     raise RuntimeError(ultimo_error)
 
 def quitar_razonamiento(texto):
-    """Elimina el razonamiento entre <think>... </think>."""
+    """Algunos modelos devuelven su razonamiento entre <think>...</think>: se elimina."""
     if not texto:
         return ""
     texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)
     texto = re.sub(r"^.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)
     return texto.strip()
 
-# ==========================================
-# LLAMADA A GEMINI
-# ==========================================
 def llamar_gemini(client, contents, system_instruction):
     try:
         config = types.GenerateContentConfig(
@@ -353,7 +345,7 @@ def _is_emoji(ch):
     return (0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2300 <= cp <= 0x23FF
             or 0x2B00 <= cp <= 0x2BFF or cp in (0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139, 0x3030, 0x303D))
 
-def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
+def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True, keep_angulares=False):
     out, counts, prev = [], {}, ""
     i, n = 0, len(s)
     def hit(k):
@@ -388,7 +380,12 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
         elif cp == NBSP and not keep_nbsp:
             hit("espacio duro (NBSP)"); out.append(" ")
         elif quotes and ch in QUOTES:
-            hit("comilla curva"); out.append(QUOTES[ch])
+            # [PERFIL TESIS 2003] Tú usas « » para conceptos («sociedades mixtas», «condicionantes
+            # y exigencias»). Con el perfil activo se conservan: son una firma humana de 2003.
+            if keep_angulares and ch in ("«", "»"):
+                out.append(ch)
+            else:
+                hit("comilla curva"); out.append(QUOTES[ch])
         elif strip_dashes and ch in ("—", "–"):
             hit("raya de IA (em/en dash)")
             k = len(out) - 1
@@ -428,29 +425,30 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
     return r.strip(), counts
 
 # ==========================================
-# CAPA C: AUDITORÍA AUTOMÁTICA
+# CAPA C: AUDITORÍA AUTOMÁTICA DEL RESULTADO
 # ==========================================
+# [PERFIL TESIS 2003] Lista revisada: ANTES el código te peleaba "en este sentido", "por otro
+# lado", "no obstante", "asimismo", "en definitiva", "de acuerdo con"... pero TÚ los usas en la
+# tesis. Borrarlos todos creaba un texto sin conectores, que es otra firma de IA. Ahora solo
+# se prohíben las fórmulas de IA MODERNA que en 2003 no existían.
 FRASES_VETADAS = [
-    "al tiempo que", "a esto se suma", "herramientas como", "a su vez", "ante este panorama",
-    "entre los que destacan", "entre las que destacan", "cabe destacar", "cabe señalar",
-    "es fundamental", "es crucial", "es importante destacar", "enfrenta un reto", "enfoque centrado en",
-    "fomentar", "abordar", "mediante", "reside en", "en este sentido", "en este contexto",
-    "por otro lado", "en definitiva", "en conclusión", "en resumen", "sin lugar a dudas",
+    "al tiempo que", "a esto se suma", "herramientas como", "ante este panorama",
+    "entre los que destacan", "entre las que destacan", "cabe señalar",
+    "es importante destacar", "enfrenta un reto", "enfoque centrado en",
     "juega un papel", "desempeña un papel", "un papel crucial", "un papel fundamental",
-    "no solo", "sino también", "panorama", "paradigma", "potenciar", "integral", "crucial",
-    "clave para", "de manera significativa", "de forma significativa", "en la era",
+    "no solo", "sino también", "panorama", "paradigma", "potenciar", "integral",
+    "de manera significativa", "de forma significativa", "en la era",
     "el desafío consiste", "abre la puerta", "abre posibilidades", "es una oportunidad",
-    "cada vez más", "hoy en día", "en un mundo", "transformador", "revolucionar",
+    "hoy en día", "en un mundo", "transformador", "revolucionar",
     "se sitúa entre", "se sitúa como", "entre los episodios más", "uno de los episodios más",
-    "uno de los acontecimientos más", "fracturó profundamente", "profundamente", "hito fundamental",
+    "uno de los acontecimientos más", "fracturó profundamente", "hito fundamental",
     "marcó un hito", "un hito", "representa un testimonio", "constituye un testimonio", "es un testimonio",
     "un antes y un después", "dejó una huella", "huella imborrable", "sentó las bases", "no puede entenderse sin",
-    "se erige", "da cuenta de", "pone de manifiesto", "en el marco de", "a lo largo de la historia",
-    "sin precedentes", "de gran relevancia", "de suma importancia", "es posible afirmar", "resulta evidente",
-    "cabe mencionar", "vale la pena", "trascendental", "ineludible", "multifacético", "complejo entramado",
-    "en última instancia", "en este marco", "así pues", "por consiguiente", "asimismo", "no obstante",
-    "en la actualidad", "es esencial", "resulta fundamental", "resulta esencial", "en el ámbito de",
-    "a nivel global", "a gran escala", "una amplia gama", "un amplio abanico", "en gran medida",
+    "se erige", "pone de manifiesto", "en el marco de", "a lo largo de la historia",
+    "sin precedentes", "de suma importancia", "es posible afirmar", "resulta evidente",
+    "vale la pena", "trascendental", "ineludible", "multifacético", "complejo entramado",
+    "en última instancia", "en este marco", "por consiguiente",
+    "a nivel global", "una amplia gama", "un amplio abanico",
     "es innegable", "no cabe duda", "se ha convertido en", "ha cobrado relevancia", "pilar fundamental",
     "en pocas palabras", "dicho de otro modo", "en términos generales", "de manera eficaz", "de manera efectiva",
 ]
@@ -490,6 +488,7 @@ _PATRON_FECHA = re.compile(rf"\b\d{{1,2}} de (?:{_MESES})(?: de(?:l año)? \d{{3
 _PATRON_CIFRA = re.compile(r"\b\d[\d.,]\d%?|\b\d%?")
 
 def extraer_datos_clave(texto):
+    """Fechas, cifras y nombres propios que el resultado debe conservar."""
     datos = []
     fechas = [m.group(0) for m in _PATRON_FECHA.finditer(texto)]
     for f in fechas:
@@ -504,14 +503,14 @@ def extraer_datos_clave(texto):
         nombre = m.group(0).strip()
         inicio = m.start()
         previo = texto[:inicio].rstrip()
-        al_inicio = (not previo) or previo[-1] in ".!?:\n"'( '
-        if al_inicio and "  " not in nombre:
+        al_inicio = (not previo) or previo[-1] in ".!?:\n\"'("
+        if al_inicio and " " not in nombre:
             continue
-        if al_inicio and "  " in nombre:
+        if al_inicio and " " in nombre:
             partes = nombre.split()
             if partes[0].lower() in ("la", "el", "los", "las", "en", "durante", "para", "con", "desde", "tras"):
-                nombre = "  ".join(partes[1:])
-        if "  " not in nombre and nombre[:1].isupper() and len(nombre) < 4:
+                nombre = " ".join(partes[1:])
+        if " " not in nombre and nombre[:1].isupper() and len(nombre) < 4:
             continue
         if len(nombre) >= 3 and nombre not in datos:
             datos.append(nombre)
@@ -535,6 +534,7 @@ def palabras_otro_idioma(texto, referencia=""):
     return [t for t in dict.fromkeys(PATRON_OTRA_ESCRITURA.findall(texto or "")) if t not in del_original]
 
 def problemas_de_fidelidad(texto, referencia, partir=False):
+    """Compara contra el original: largo, párrafos y datos perdidos."""
     problemas = []
     p_ref, p_txt = contar_palabras(referencia), contar_palabras(texto)
     if p_ref and p_txt < 0.88 * p_ref:
@@ -571,6 +571,7 @@ def dividir_oraciones(texto):
     return [p for p in partes if len(p.split()) >= 2]
 
 def auditar_texto(texto, referencia=None, partir=False):
+    """Devuelve (lista_de_problemas, métricas). Con referencia, revisa también la fidelidad."""
     problemas = problemas_de_fidelidad(texto, referencia, partir) if referencia else []
     oraciones = dividir_oraciones(texto)
     largos = [len(o.split()) for o in oraciones]
@@ -582,23 +583,23 @@ def auditar_texto(texto, referencia=None, partir=False):
         if cv < RITMO_MINIMO:
             problemas.append(
                 f"Ritmo demasiado parejo (las oraciones miden casi lo mismo, promedio {media:.0f} palabras). "
-                "Mezcla oraciones de 4 a 9 palabras con otras de 22 a 32."
+                "Mezcla oraciones de 8 a 12 palabras con otras de 30 a 40, como en el texto de referencia."
             )
         rachas = 0
         for k in range(len(largos) - 2):
             trio = largos[k:k + 3]
-            if min(trio) >= 10 and max(trio) - min(trio) <= 3:
+            if min(trio) >= 12 and max(trio) - min(trio) <= 3:
                 problemas.append(
                     f'Tres oraciones seguidas miden casi lo mismo ({trio[0]}, {trio[1]} y {trio[2]} palabras), '
-                    f'desde "{oraciones[k][:60]}...". Acorta una a menos de 9 palabras o une dos.'
+                    f'desde "{oraciones[k][:60]}...". Acorta una a menos de 12 palabras o une dos.'
                 )
                 rachas += 1
                 if rachas == 2:
                     break
-        cortas = sum(1 for x in largos if x <= 9)
+        cortas = sum(1 for x in largos if x <= 12)
         if cortas == 0:
-            problemas.append("No hay ninguna oración corta. Agrega al menos dos de 5 a 9 palabras.")
-        largas = [o for o in oraciones if len(o.split()) > 38]
+            problemas.append("No hay oraciones de enlace cortas. Agrega al menos dos de 8 a 12 palabras.")
+        largas = [o for o in oraciones if len(o.split()) > 45]
         for o in largas[:2]:
             problemas.append(f'Oración demasiado larga, divídela: "{o[:90]}..."')
     bajo = texto.lower()
@@ -606,61 +607,66 @@ def auditar_texto(texto, referencia=None, partir=False):
     if vetadas:
         problemas.append("Quita o reemplaza estas expresiones típicas de IA: " + ", ".join(f'"{v}"' for v in vetadas) + ".")
     for m in list(PATRON_ENUMERACION.finditer(texto))[:3]:
-        problemas.append(f'Enumeración de tres elementos, sepárala en dos oraciones: "{m.group(0)}".')
+        problemas.append(f'Enumeración de tres elementos, repártela en dos oraciones: "{m.group(0)}".')
     for m in list(PATRON_GERUNDIO.finditer(texto))[:3]:
         problemas.append(f'Gerundio de remate tras coma ("{m.group(1)}"): cámbialo por punto y un verbo conjugado.')
     if len(oraciones) >= 4:
         ARRANQUES = ("el", "la", "los", "las", "se")
         con_arranque = [o for o in oraciones if o.split()[0].lower().strip(',."¿¡(') in ARRANQUES]
         proporcion = len(con_arranque) / len(oraciones)
-        if proporcion > 0.30:
+        # [PERFIL TESIS 2003] Umbral 0.40: tu tesis abre muchas oraciones con "En", "De", "Por",
+        # "El". Prohibirlo todo sería antinatural para tu voz.
+        if proporcion > 0.40:
             ejemplos = "; ".join(f'"{o[:60]}..."' for o in con_arranque[:4])
             problemas.append(
                 f"{len(con_arranque)} de {len(oraciones)} oraciones ({round(proporcion * 100)}%) empiezan con "
-                "El, La, Los, Las o Se. Deja menos del 30%: cambia el comienzo de varias, abriendo con una fecha, "
-                "un lugar, un nombre propio, un complemento, un verbo o una subordinada (\"En 1789, ...\", "
-                "\"Para los campesinos, ...\", \"Cuando cayó la fortaleza, ...\", \"Robespierre ...\"). "
-                f"Por ejemplo estas: {ejemplos}"
+                "El, La, Los, Las o Se. Abre varias con: \"De acuerdo con lo anterior\", \"En primer lugar\", "
+                "\"Por tanto\", \"En este sentido\", \"Sin embargo\", \"De lo anterior\", \"En cambio\", "
+                f"\"Es por ello que\". Por ejemplo estas: {ejemplos}"
             )
     planos = 0
     for parrafo in dividir_parrafos(texto):
         lp = [len(o.split()) for o in dividir_oraciones(parrafo)]
-        if len(lp) >= 4 and statistics.mean(lp) and statistics.pstdev(lp) / statistics.mean(lp) < 0.30:
+        if len(lp) >= 4 and statistics.mean(lp) and statistics.pstdev(lp) / statistics.mean(lp) < 0.28:
             problemas.append(
                 f'El párrafo que empieza con "{parrafo[:60]}..." tiene todas sus oraciones de largo parecido. '
-                "Deja una muy corta y otra larga dentro de ese mismo párrafo."
+                "Deja una de enlace corta y otra larga con dos subordinadas dentro del mismo párrafo."
             )
             planos += 1
             if planos == 2:
                 break
-    if len(oraciones) >= 4:
-        con_conector = [o for o in oraciones if _normalizar(o).lstrip('"¿¡(').startswith(
+    if len(oraciones) >= 6:
+        con_conector = [o for o in oraciones if _normalizar(o).lstrip('"¿¡(«').startswith(
             tuple(_normalizar(c) + s for c in CONECTORES_INICIO for s in (",", " ")))]
-        if len(con_conector) >= 2 and len(con_conector) / len(oraciones) > 0.12:
+        if len(con_conector) >= 3 and len(con_conector) / len(oraciones) > 0.20:
             ejemplos = "; ".join(f'"{o[:45]}..."' for o in con_conector[:3])
             problemas.append(
-                f"{len(con_conector)} oraciones abren con un conector de manual ({ejemplos}). "
-                "Deja uno como máximo: en las demás quita el conector o entra directo con el sujeto o el hecho."
+                f"{len(con_conector)} oraciones abren con el mismo tipo de conector ({ejemplos}). "
+                "Varía: usa \"De acuerdo con lo anterior\", \"En este sentido\", \"Por tanto\", \"De lo anterior\" "
+                "alternándolos, sin repetir dos veces el mismo."
             )
-    if contar_palabras(texto) >= 150 and not re.search(r"[;:(?]", texto):
-        problemas.append(
-            "Toda la puntuación es coma y punto. Usa una o dos veces dos puntos, punto y coma, "
-            "un paréntesis o una pregunta, donde salga natural."
-        )
+    # [PERFIL TESIS 2003] Tu tesis usa paréntesis con fuentes y «comillas angulares»: la auditoría
+    # ahora exige esa puntuación en lugar de la de blog.
+    if contar_palabras(texto) >= 150:
+        if not re.search(r"[«]", texto) and not re.search(r"\(.+?,\s*\d{4}\)", texto):
+            problemas.append(
+                "Falta puntuación del texto de referencia: incluye al menos un paréntesis con fuente o "
+                "aclaración (Rossi, 1971) y unas «comillas angulares» sobre un concepto clave."
+            )
     if len(oraciones) >= 5:
         inicios = [o.split()[0].lower().strip(",.") for o in oraciones]
         for palabra in set(inicios):
-            if inicios.count(palabra) >= 3 and inicios.count(palabra) / len(inicios) > 0.25:
+            if inicios.count(palabra) >= 4 and inicios.count(palabra) / len(inicios) > 0.30:
                 problemas.append(f'Muchas oraciones empiezan con "{palabra}". Varía los inicios.')
     if oraciones:
         ultima = oraciones[-1].lower()
-        if re.search(r"\b(debe|deben|deberá|necesario|desafío|reto|futuro|oportunidad|clave|en definitiva)\b", ultima):
+        if re.search(r"\b(debe|deben|deberá|necesario|desafío|reto|futuro|oportunidad|enseña|permite entender|clave|en definitiva)\b", ultima):
             problemas.append(f'La última oración suena a moraleja: "{oraciones[-1][:90]}". Reescríbela como un hecho concreto, sin borrar su contenido.')
     metricas["problemas"] = len(problemas)
     return problemas, metricas
 
 # ==========================================
-# CAPA D: VERIFICACIÓN CON DETECTORES
+# CAPA D: VERIFICACIÓN CON DETECTORES REALES
 # ==========================================
 def detectores_activos():
     activos = []
@@ -671,6 +677,7 @@ def detectores_activos():
     return activos
 
 def medir_gptzero(texto):
+    """Devuelve (porcentaje de IA, oraciones marcadas)."""
     headers = {"x-api-key": GPTZERO_API_KEY, "Content-Type": "application/json", "Accept": "application/json"}
     payload = {"document": texto, "multilingual": True}
     resp = requests.post("https://api.gptzero.me/v2/predict/text", headers=headers, json=payload, timeout=(10, 60))
@@ -698,8 +705,9 @@ def _token_copyleaks(email, clave):
     return resp.json()["access_token"]
 
 def medir_copyleaks(texto):
+    """Devuelve (porcentaje de IA, tramos marcados). Copyleaks exige al menos 255 caracteres."""
     if len(texto) < 255:
-        raise RuntimeError("el texto tiene menos de 255 caracteres, el mínimo que acepta ")
+        raise RuntimeError("el texto tiene menos de 255 caracteres, el mínimo que acepta Copyleaks")
     resp = None
     for intento in range(2):
         token = _token_copyleaks(COPYLEAKS_EMAIL, COPYLEAKS_API_KEY)
@@ -747,6 +755,7 @@ def _clave_texto(t):
     return re.sub(r"\s+", " ", _normalizar(t)).strip()
 
 def oraciones_marcadas(parrafo, frases):
+    """Oraciones de un párrafo que coinciden con algún tramo marcado por un detector."""
     claves = set()
     for f in frases:
         for trozo in (dividir_oraciones(f) or [f]):
@@ -766,58 +775,120 @@ def oraciones_marcadas(parrafo, frases):
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap');
+
 :root {
---bg: #0F1114; --surface: #171A1F; --surface-2: #20242B; --surface-3: #2A2F38;
---ink: #ECEEF1; --ink-soft: #A6ACB6; --accent: #F2552C; --accent-press: #DB4A22;
---on-accent: #0F1114; --human: #22D3E6; --paper: #F2F1EC; --paper-ink: #1A1B1E; --paper-soft: #5B5E66;
+--bg: #0F1114;
+--surface: #171A1F;
+--surface-2: #20242B;
+--surface-3: #2A2F38;
+--ink: #ECEEF1;
+--ink-soft: #A6ACB6;
+--accent: #F2552C;
+--accent-press: #DB4A22;
+--on-accent: #0F1114;
+--human: #22D3E6;
+--paper: #F2F1EC;
+--paper-ink: #1A1B1E;
+--paper-soft: #5B5E66;
 --font-ui: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
 --font-page: 'Newsreader', Georgia, 'Times New Roman', serif;
---t-sm: 0.8125rem; --t-base: 1rem; --t-md: 1.1875rem; --t-lg: 1.75rem; --t-xl: clamp(2.75rem, 6.5vw, 5.25rem);
---r: 4px; --dur-micro: 120ms; --dur-short: 200ms;
+--t-sm: 0.8125rem;
+--t-base: 1rem;
+--t-md: 1.1875rem;
+--t-lg: 1.75rem;
+--t-xl: clamp(2.75rem, 6.5vw, 5.25rem);
+--r: 4px;
+--dur-micro: 120ms;
+--dur-short: 200ms;
 }
+
 html, body { overflow-x: clip; }
 .stApp { background-color: var(--bg); color: var(--ink); font-family: var(--font-ui); }
-.stApp [data-testid="stMarkdownContainer"], .stApp label, .stApp button, .stApp input, .stApp textarea { font-family: var(--font-ui); }
+.stApp [data-testid="stMarkdownContainer"],
+.stApp label, .stApp button, .stApp input, .stApp textarea { font-family: var(--font-ui); }
 [data-testid="stHeader"] { background-color: transparent; }
 #MainMenu, footer, [data-testid="stHeaderActionElements"] { display: none; }
+
 .block-container { max-width: 1240px; padding: 2.5rem 2rem 3rem 2rem !important; }
-.stApp h1.app-title { font-family: var(--font-ui) !important; font-size: var(--t-lg) !important; font-weight: 600 !important; letter-spacing: -0.02em; line-height: 1.1 !important; color: var(--ink) !important; margin: 0 !important; padding: 0 !important; overflow-wrap: break-word; min-width: 0; }
+
+.stApp h1.app-title {
+font-family: var(--font-ui) !important; font-size: var(--t-lg) !important; font-weight: 600 !important;
+letter-spacing: -0.02em; line-height: 1.1 !important; color: var(--ink) !important; margin: 0 !important; padding: 0 !important;
+overflow-wrap: break-word; min-width: 0;
+}
 .stApp p.app-lead { font-size: var(--t-base); color: var(--ink-soft); margin: 0.625rem 0 2.5rem 0 !important; max-width: 60ch; line-height: 1.5; }
+
 .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin: 0 0 0.625rem 0; }
 .panel-title { font-size: var(--t-md); font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
 .panel-meta { font-size: var(--t-sm); color: var(--ink-soft); font-variant-numeric: tabular-nums; }
-[data-testid="stTextArea"] [data-baseweb="textarea"] { background-color: var(--surface) !important; border: 1px solid var(--surface-3) !important; border-radius: var(--r) !important; transition: border-color var(--dur-micro) ease; }
+
+[data-testid="stTextArea"] [data-baseweb="textarea"] {
+background-color: var(--surface) !important; border: 1px solid var(--surface-3) !important;
+border-radius: var(--r) !important;
+transition: border-color var(--dur-micro) ease;
+}
 [data-testid="stTextArea"] [data-baseweb="textarea"]:focus-within { border-color: var(--human) !important; }
-[data-testid="stTextArea"] textarea { background-color: var(--surface) !important; color: var(--ink) !important; -webkit-text-fill-color: var(--ink) !important; font-size: var(--t-base) !important; line-height: 1.6 !important; padding: 1.25rem !important; caret-color: var(--human); }
+[data-testid="stTextArea"] textarea {
+background-color: var(--surface) !important; color: var(--ink) !important;
+-webkit-text-fill-color: var(--ink) !important;
+font-size: var(--t-base) !important; line-height: 1.6 !important; padding: 1.25rem !important;
+caret-color: var(--human);
+}
 [data-testid="stTextArea"] textarea::placeholder { color: var(--ink-soft); -webkit-text-fill-color: var(--ink-soft); }
 [data-testid="InputInstructions"] { color: var(--ink-soft) !important; }
-.hoja { height: 400px; overflow-y: auto; box-sizing: border-box; background-color: var(--paper); color: var(--paper-ink); border-radius: var(--r); padding: 1.75rem 2rem; }
-.hoja p { font-family: var(--font-page) !important; font-size: 1.125rem; line-height: 1.65; color: var(--paper-ink); margin: 0 0 1em 0; max-width: 68ch; }
+
+.hoja {
+height: 400px; overflow-y: auto; box-sizing: border-box;
+background-color: var(--paper); color: var(--paper-ink);
+border-radius: var(--r); padding: 1.75rem 2rem;
+}
+.hoja p {
+font-family: var(--font-page) !important; font-size: 1.125rem; line-height: 1.65;
+color: var(--paper-ink); margin: 0 0 1em 0; max-width: 68ch;
+}
 .hoja p:last-child { margin-bottom: 0; }
-.hoja.vacia { background-color: var(--surface-2); color: var(--ink-soft); display: flex; flex-direction: column; justify-content: center; padding: 2rem 2.5rem; }
+.hoja.vacia {
+background-color: var(--surface-2); color: var(--ink-soft);
+display: flex; flex-direction: column; justify-content: center; padding: 2rem 2.5rem;
+}
 .hoja.vacia .vacia-titulo { font-family: var(--font-page); font-size: 1.5rem; line-height: 1.25; color: var(--ink); margin: 0 0 0.5rem 0; max-width: 22ch; }
 .hoja.vacia .vacia-texto { font-size: var(--t-base); color: var(--ink-soft); margin: 0; max-width: 40ch; line-height: 1.5; }
-.stButton > button, [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-secondary"] { min-height: 44px; border-radius: var(--r) !important; font-weight: 600; transition: background-color var(--dur-micro) ease, transform var(--dur-micro) ease; }
-[data-testid="stBaseButton-primary"] { background-color: var(--accent) !important; color: var(--on-accent) !important; border: 0 !important; }
+
+.stButton > button, [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-secondary"] {
+min-height: 44px; border-radius: var(--r) !important; font-weight: 600;
+transition: background-color var(--dur-micro) ease, transform var(--dur-micro) ease;
+}
+[data-testid="stBaseButton-primary"] {
+background-color: var(--accent) !important; color: var(--on-accent) !important; border: 0 !important;
+}
 .stApp .stButton button p, .stApp [data-testid="stFormSubmitButton"] button p { font-size: var(--t-base) !important; font-weight: 600 !important; }
 [data-testid="stBaseButton-primary"] p { color: var(--on-accent) !important; }
 [data-testid="stBaseButton-primary"]:hover { background-color: var(--accent-press) !important; }
-[data-testid="stBaseButton-secondary"] { background-color: var(--surface-2) !important; color: var(--ink) !important; border: 0 !important; }
+[data-testid="stBaseButton-secondary"] {
+background-color: var(--surface-2) !important; color: var(--ink) !important; border: 0 !important;
+}
 [data-testid="stBaseButton-secondary"]:hover { background-color: var(--surface-3) !important; color: var(--ink) !important; }
 [data-testid="stBaseButton-primary"]:active, [data-testid="stBaseButton-secondary"]:active { transform: translateY(1px); }
-.stApp button:focus-visible, .stApp input:focus-visible, .stApp textarea:focus-visible, .stApp [role="checkbox"]:focus-visible { outline: 2px solid var(--human) !important; outline-offset: 2px; transition: none; }
+.stApp button:focus-visible, .stApp input:focus-visible, .stApp textarea:focus-visible, .stApp [role="checkbox"]:focus-visible {
+outline: 2px solid var(--human) !important; outline-offset: 2px; transition: none;
+}
+
 [data-testid="stSidebar"] { background-color: var(--surface); border-right: 0; }
 [data-testid="stSidebar"] h3 { font-family: var(--font-ui); font-size: var(--t-md); font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
 .motor { background-color: var(--surface-2); border-radius: var(--r); padding: 0.75rem 0.875rem; margin: 0.25rem 0 1.25rem 0; }
 .motor-label { font-size: var(--t-sm); color: var(--ink-soft); margin: 0; }
 .motor-valor { font-size: var(--t-base); color: var(--ink); margin: 0.125rem 0 0 0; font-weight: 500; overflow-wrap: anywhere; }
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { font-size: var(--t-base); color: var(--ink); }
+
 [data-testid="stAlert"] { border-radius: var(--r); }
 [data-testid="stExpander"] details, [data-testid="stStatusWidget"] { border-radius: var(--r); }
-[data-testid="stTextInput"] [data-baseweb="input"] { background-color: var(--surface-2) !important; border: 1px solid var(--surface-3) !important; border-radius: var(--r) !important; }
+[data-testid="stTextInput"] [data-baseweb="input"] {
+background-color: var(--surface-2) !important; border: 1px solid var(--surface-3) !important; border-radius: var(--r) !important;
+}
 [data-testid="stTextInput"] [data-baseweb="input"]:focus-within { border-color: var(--human) !important; }
 [data-testid="stTextInput"] input { color: var(--ink) !important; background-color: var(--surface-2) !important; padding: 0.75rem 0.875rem !important; font-size: var(--t-base) !important; }
 [data-testid="stTextInput"] label p { color: var(--ink-soft); font-size: var(--t-base); }
+
 .ritmo { background-color: var(--surface); border-radius: var(--r); padding: 1.75rem 2rem; margin-top: 2.5rem; }
 .stApp h2.ritmo-titulo { font-family: var(--font-ui) !important; font-size: var(--t-md) !important; font-weight: 600 !important; color: var(--ink) !important; margin: 0 0 0.25rem 0 !important; padding: 0 !important; letter-spacing: -0.01em; line-height: 1.3 !important; }
 .stApp p.ritmo-intro { font-size: var(--t-base); color: var(--ink-soft); margin: 0.25rem 0 1.5rem 0 !important; max-width: 70ch; line-height: 1.5; }
@@ -833,28 +904,36 @@ html, body { overflow-x: clip; }
 .pendientes ul { margin: 0; padding-left: 1.1rem; }
 .pendientes li { color: var(--ink-soft); font-size: var(--t-base); line-height: 1.5; margin: 0 0 0.375rem 0; }
 .sin-pendientes { font-size: var(--t-base); color: var(--ink-soft); margin: 1.25rem 0 0 0; }
+
 .stApp h1.ingreso-marca { font-family: var(--font-ui) !important; font-size: var(--t-xl) !important; font-weight: 600 !important; letter-spacing: -0.04em; line-height: 0.95 !important; color: var(--ink) !important; margin: 1.5rem 0 0 0 !important; padding: 0 !important; overflow-wrap: break-word; min-width: 0; }
 .stApp p.ingreso-lead { font-size: var(--t-md); color: var(--ink-soft); line-height: 1.5; margin: 2rem 0 0 0 !important; max-width: 34ch; }
 .ingreso-espacio { height: 9vh; }
 .ingreso-form-titulo { font-size: var(--t-md); font-weight: 600; color: var(--ink); margin: 0 0 0.25rem 0; }
 .stApp p.ingreso-form-texto { font-size: var(--t-base); color: var(--ink-soft); margin: 0.25rem 0 1rem 0 !important; }
 .ingreso-form-pad { height: 9.5rem; }
+
 .pie { display: flex; justify-content: space-between; align-items: flex-end; gap: 2rem; flex-wrap: wrap; margin-top: 6rem; padding-top: 2rem; }
 .pie-aviso { font-size: var(--t-sm); color: var(--ink-soft); line-height: 1.55; max-width: 62ch; margin: 0; }
 .pie-firma { text-align: right; margin: 0; }
 .pie-firma p { font-size: var(--t-sm); color: var(--ink-soft); margin: 0; }
 .pie-firma .pie-autor { font-size: var(--t-base); color: var(--ink); font-weight: 500; }
+
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 @media (max-width: 1024px) {
 .st-key-paneles [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; row-gap: 2rem; }
-.st-key-paneles [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex: 1 1 100% !important; width: 100% !important; min-width: 100% !important; }
+.st-key-paneles [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+flex: 1 1 100% !important; width: 100% !important; min-width: 100% !important;
+}
 .st-key-botones [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; row-gap: 0; }
-.st-key-botones [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { min-width: 0 !important; width: auto !important; flex: 1 1 0 !important; }
+.st-key-botones [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+min-width: 0 !important; width: auto !important; flex: 1 1 0 !important;
+}
 .st-key-botones [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child { flex-grow: 3 !important; }
 .hoja { height: auto; min-height: 220px; max-height: 75vh; }
 .ritmo-fila { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 .ritmo svg { margin-top: 0.5rem; width: 100%; max-width: 640px; height: auto; }
 }
+
 @media (max-width: 768px) {
 .block-container { padding: 1.5rem 1rem 2rem 1rem !important; }
 .hoja { padding: 1.25rem 1.25rem; }
@@ -884,6 +963,7 @@ PIE_HTML = """
 """
 
 def html_hoja(texto):
+    """El resultado como hoja de papel, con sus párrafos."""
     if not texto:
         return (
             '<div class="hoja vacia" role="region" aria-label="Texto humanizado">'
@@ -896,6 +976,7 @@ def html_hoja(texto):
     return f'<div class="hoja" role="region" aria-label="Texto humanizado" tabindex="0">{cuerpo}</div>'
 
 def svg_ritmo(texto, clase):
+    """Una barra por oración; la altura es su número de palabras."""
     largos = [len(o.split()) for o in dividir_oraciones(texto)][:70]
     if not largos:
         return ""
@@ -986,7 +1067,7 @@ with st.sidebar:
         modelo_final_id = st.selectbox(
             "Modelo para la redacción final",
             conectados, index=conectados.index(por_defecto), format_func=lambda pid: nombres[pid],
-            help="Hace el paso más importante. Por defecto se elige el que mejor escribe en español.",
+            help="Hace el paso más importante. Para el perfil de tesis, elige Groq o OpenRouter con Llama 3.3 70B.",
         )
         proveedores_mezcla = st.multiselect(
             "Modelos para los demás pasos",
@@ -1016,16 +1097,23 @@ with st.sidebar:
                 opciones = mods[:30]
                 elegido = st.selectbox(nombres[pid], opciones, index=0, key=f"modelo_{pid}_{VERSION_MODELOS}")
                 MODELOS_RESUELTOS[pid] = [elegido] + [m for m in mods if m != elegido]
-    # [MEJORA 0%] Modo profundo activado por defecto
+    # [PERFIL TESIS 2003] Toggle principal: activa el dictado de estilo extraído de tu tesis
+    estilo_tesis_2003 = st.toggle(
+        "✒️ Estilo tesis 2003 (Manuel Valenzuela)",
+        value=True,
+        help="Reescribe imitando el perfil de tu tesis de poblaciones espontáneas: frases largas "
+             "con incrustaciones, conectores académicos chilenos de los 2000, vocabulario técnico "
+             "con localismos, paréntesis con fuentes y «comillas angulares». Objetivo: 7-9% en detectores.",
+    )
     modo_profundo = st.toggle(
-        "🔥 Modo Profundo (Recomendado para 7-9% de detección)",
+        "Modo profundo (más lento)",
         value=True,
         help="Apagado: una sola llamada por bloque, mucho más rápido. "
              "Encendido: pasa el texto por el inglés y de vuelta, reordena la estructura y corrige dos veces "
              "(4 a 6 llamadas por bloque).",
     )
     pasadas = st.slider(
-        "Pasadas de humanización", 1, 3, 2,
+        "Pasadas de humanización", 1, 3, 1,
         help="Con 2, el resultado de la primera pasada vuelve a entrar al humanizador, igual que copiarlo y "
              "pegarlo de nuevo. Cada pasada extra suma más o menos el mismo tiempo que la primera.",
     )
@@ -1051,19 +1139,36 @@ with st.sidebar:
     muestra_estilo = st.text_area(
         "Muestra de tu propia escritura (opcional)",
         height=140, max_chars=3000, key="muestra_estilo",
-        placeholder="Pega 2 o 3 párrafos escritos por ti, sin IA.",
+        placeholder="Pega 2 o 3 párrafos de tu tesis de 2003, sin IA.",
         help="La redacción final imita el ritmo, el vocabulario y la puntuación de esta muestra. "
-             "Es lo que más acerca el resultado a un texto escrito por ti.",
+             "Con el perfil de tesis activado, este campo es OPCIONAL: el perfil ya está cargado.",
     ).strip()
-    # [MEJORA 0%] Guía al usuario hacia los modelos correctos
-    with st.expander("⚙️ Configuración para lograr 7-9% de detección", expanded=True):
+    # [PERFIL TESIS 2003] Expander que explica el perfil extraído del PDF
+    with st.expander("📄 Qué imita el perfil de tesis 2003", expanded=estilo_tesis_2003):
         st.markdown(
-            "Para lograr entre 7% y 9% en GPTZero/Copyleaks, sigue estos 4 pasos:\n\n"
-            "1. **Elige el modelo correcto**: En el menú superior, selecciona **OpenRouter** o **Groq** y elige un modelo como `llama-3.3-70b-instruct` o `qwen-2.5-72b-instruct`. Estos modelos tienen una 'huella' estadística que confunde a los detectores.\n"
-            "2. **Activa el Modo Profundo**: Ya viene activado. La retrotraducción (ES→EN→ES) rompe la estructura sintáctica de la IA.\n"
-            "3. **Pega tu Muestra de Estilo**: Escribe 2 o 3 párrafos tuyos abajo. El modelo imitará tu entropía personal, que es lo que ningún detector puede predecir.\n"
-            "4. **Usa 2 pasadas**: Ya viene configurado. La segunda pasada refina el resultado.\n\n"
-            "*Nota: Agrega tus API Keys en Settings → Secrets de Streamlit.*"
+            "**Rasgos extraídos de tu tesis (Origen y desarrollo de las poblaciones espontáneas, Talca):**\n\n"
+            "- Frases de 20-40 palabras con subordinadas encadenadas y comas de inciso\n"
+            "- Inicios típicos: *De acuerdo con lo anterior*, *En primer lugar*, *Por tanto*, "
+            "*En este sentido*, *De lo anterior*, *En cambio*, *Es por ello que*\n"
+            "- Fórmulas propias: *se puede observar que*, *existe un número significativo de*, "
+            "*esto quiere decir que*, *lo cual hace pensar que*, *esto trae consigo*\n"
+            "- Vocabulario técnico chileno: *prospectivamente*, *tuición*, *dilatado*, *cercena*, "
+            "*amalgamar*, *flagelos*, *mediaguas*, *allegados*\n"
+            "- Puntuación: paréntesis con fuente *(Rossi, 1971)*, «comillas angulares» para conceptos, "
+            "enumeraciones *En primer lugar... en segunda instancia... y finalmente*\n"
+            "- Imperfecciones conservadas: *mas* sin tilde, *ésta/éstas* con tilde\n\n"
+            "**Temperatura 1.15 y penalizaciones 0.35/0.3:** tu tesis tiene léxico impredecible pero "
+            "estructura conservadora. La temperatura alta solo rompe la previsibilidad de palabras; "
+            "las penalizaciones medias mantienen los términos técnicos (*suelo urbano*, *calidad de vida*) "
+            "sin sinónimos forzados de IA.\n\n"
+            "**Objetivo realista: 7-9%.** Con detectores activados (GPTZero/Copyleaks en Secrets) y 2 "
+            "pasadas se suele llegar a esa zona. El 0% absoluto no es estable en la nube."
+        )
+    with st.expander("Cómo agregar más modelos"):
+        st.markdown(
+            "En Streamlit Cloud, abre **Settings → Secrets** y agrega las claves que tengas:\n\n"
+            + "\n".join(f"- `{PROVEEDORES[pid]['clave']}` para {nombres[pid]}" for pid in ORDEN_CALIDAD)
+            + "\n\nPara fijar un modelo concreto, agrega por ejemplo `GROQ_MODEL = \"llama-3.3-70b-versatile\"`."
         )
     st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
     if st.button("Cerrar sesión", width="stretch"):
@@ -1127,43 +1232,122 @@ Eres un editor que desarma la estructura de un ensayo escrito por IA, sin quitar
 """ + REGLA_NO_RESUMIR + """
 QUÉ DEBES HACER:
 ROMPE LA ESTRUCTURA DE LOS PÁRRAFOS: divide solo los párrafos más largos, por donde cambia la idea (si el original tiene 4 párrafos, el resultado tiene 5 o 6). Nunca dejes una sola oración por párrafo en todo el texto: que los párrafos midan distinto, alguno de dos oraciones y otro de cinco.
-VARÍA EL LARGO DE LAS ORACIONES DE FORMA EXTREMA: mezcla oraciones de 4 a 7 palabras con otras de 30 a 40. Nunca tres oraciones seguidas de largo parecido.
+VARÍA EL LARGO DE LAS ORACIONES: mezcla oraciones de enlace de 8 a 12 palabras con otras de 30 a 40 con dos subordinadas. Nunca tres oraciones seguidas de largo parecido.
 CAMBIA LA ARQUITECTURA DE CADA PÁRRAFO: no empieces cada párrafo con una oración que lo resume ni lo cierres con una que concluye. Abre con un hecho, una fecha, un nombre o una consecuencia, y deja la explicación para después.
 MUEVE LAS PIEZAS DENTRO DE CADA ORACIÓN: pon a veces la fecha o el lugar al inicio, a veces el sujeto al final, y otras usa una subordinada al comienzo.
 Conserva todas las fechas, nombres, instituciones, cifras y citas tal cual.
 Devuelve ÚNICAMENTE el texto reestructurado, con los párrafos separados por una línea en blanco.
 """
 
-# [MEJORA 0%] PROMPT_FINAL basado en el estilo de la tesis de Manuel Valenzuela Saavedra (2003)
-PROMPT_FINAL = """
-Reescribe el texto en español académico, imitando el estilo de una tesis universitaria chilena de principios de los 2000s.
-
-ESTILO OBJETIVO (analizado de una tesis real de 2003):
-- Vocabulario académico accesible: "prospectivamente", "antagónicos", "coyuntural", "tuición", "delineamientos", "emplazamiento"
-- Conectores formales pero naturales: "De acuerdo con lo anterior", "Por lo tanto", "Sin embargo", "De esta manera", "Por otro lado", "En este contexto", "De lo anterior se puede desprender", "Es así como"
-- Tono impersonal con "debemos"/"es necesario": "debemos necesariamente considerar", "es necesario comprender"
-- Citas entre paréntesis: "(Rossi, 1971)", "(Bernuolli, 1951)"
-- Oraciones largas con subordinadas: 25-35 palabras promedio
-- Estructura: introducción del concepto → desarrollo → conclusión parcial
-- Puntuación: muchas comas, pocos punto y coma, paréntesis para citas
-
-REGLAS ANTI-DETECTOR (obligatorias para bajar a 7-9%):
-1. BURSTINESS EXTREMA: alterna oraciones ultra-cortas (6-10 palabras) con oraciones largas y complejas (30-40 palabras). Nunca tres seguidas de largo similar.
-2. INICIOS VARIADOS: máximo 30% de oraciones pueden empezar con "El/La/Los/Las". Usa: verbos ("Resulta necesario..."), adverbios ("Tradicionalmente,..."), preposiciones ("En el contexto de..."), nombres propios, cifras.
-3. PROHIBIDO: "se caracterizó por", "a medida que", "supuso una transformación", "cuyas repercusiones", "¿Por qué estudiar esto? Porque...". Reemplaza con verbos concretos y acciones específicas.
-4. CERO MORALEJA FINAL: el último párrafo termina con un dato, una fecha, un nombre o una acción concreta. Nunca con "esto nos enseña", "permite entender", "es importante recordar".
-5. PUNTUACIÓN VARIADA: usa al menos 2 paréntesis (para citas), 1 punto y coma y 1 pregunta retórica en todo el texto.
-6. MEZCLA VOCABULARIO: 1 palabra coloquial cada 10 académicas. Ejemplo: "se armó un problema" en vez de "se generó una problemática".
-
-CONSERVA todas las fechas, nombres, cifras y lugares TAL CUAL. No resumas. No agregues información nueva.
-
-Devuelve SOLO el texto reescrito.
+# ==========================================
+# [PERFIL TESIS 2003] Dictado de estilo extraído del PDF
+# ==========================================
+ESTILO_2003 = """
+PERFIL DE ESTILO (extraído de una tesis real de geografía social escrita en Chile en 2003,
+autor docente de Historia y Geografía):
+- Oraciones largas con incrustaciones entre comas: promedio 20-30 palabras; hay de 35-40 con
+  dos o tres subordinadas encadenadas. Junto a ellas, oraciones de enlace cortas (8-12 palabras).
+- Inicios típicos del autor: "De acuerdo con lo anterior", "En primer lugar", "Por tanto",
+  "De esta manera", "En este sentido", "Sin embargo", "Por otro lado", "De lo anterior",
+  "En cambio", "Es por ello que", "Como se puede observar", "En relación a", "Según",
+  "A continuación", "En el caso de", "Por el contrario".
+- Fórmulas recurrentes del autor: "se puede observar que", "existe un número significativo de",
+  "esto quiere decir que", "lo cual hace pensar que", "esto trae consigo", "vale la pena analizar",
+  "cabe mencionar que" (una sola vez en todo el texto).
+- Vocabulario: técnico-académico chileno de los 2000 ("prospectivamente", "tuición", "dilatado",
+  "cercena", "amalgamar", "legitimizar", "congruente", "envergadura", "flagelos", "mediaguas",
+  "allegados", "especulación", "delineamientos") mezclado con palabras llanas ("casas", "luz",
+  "agua", "gente", "terreno").
+- Tono impersonal con primera persona de plural académica: "debemos considerar", "se realizó",
+  "es necesario comprender", "nos interesa".
+- Enumeraciones con "En primer lugar... en segunda instancia... y finalmente" o con "1)... 2)... 3)...".
+- Puntuación: comas abundantes; paréntesis para fuentes "(Rossi, 1971)" y aclaraciones "(DIDECO)";
+  comillas angulares « » para conceptos clave («sociedades mixtas», «condicionantes y exigencias»);
+  "etc." dentro de paréntesis.
+- Imperfecciones humanas a CONSERVAR si aparecen en la muestra o el texto: "mas" sin tilde,
+  tildes en demostrativos ("ésta", "éstas"), "él numero". No las introduzcas de la nada y
+  no las corrijas: son parte de la firma de 2003.
+- PROHIBIDO (fórmulas de IA moderna que en 2003 no existían): "no solo... sino también",
+  "juega un papel", "desempeña un papel", "panorama", "paradigma", "potenciar", "integral",
+  "transformador", "en el mundo actual", "es fundamental destacar", "cabe señalar que",
+  "en definitiva", "en conclusión", "sin lugar a dudas", "fracturó profundamente", "hito",
+  "testimonio", "sentó las bases", "un antes y un después", "en el marco de", "a lo largo de la historia".
 """
 
+PROMPT_FINAL_TESIS = """
+Eres el autor de una tesis de geografía social escrita en Chile en 2003: docente de Historia y
+Geografía, estilo académico sobrio, frases largas con incrustaciones, vocabulario técnico con
+localismos chilenos. Reescribe el borrador conservando todo su contenido y eliminando la cadencia
+de IA moderna.
+""" + REGLA_NO_RESUMIR + """
+IMITA ESTE PERFIL (es la voz del autor real):
+""" + ESTILO_2003 + """
+REGLAS DE APLICACIÓN:
+1. Conserva la división de párrafos del borrador; divide solo los más largos, por donde cambia la idea.
+2. Alterna el ritmo: una oración larga con dos subordinadas (30-40 palabras), luego una de enlace
+   de 8-12. Nunca tres seguidas del mismo largo.
+3. Menos del 40% de las oraciones pueden empezar con "El/La/Los/Las". Abre las demás con los
+   inicios típicos del perfil ("De acuerdo con lo anterior", "En primer lugar", "Por tanto",
+   "En este sentido", "Sin embargo", "De lo anterior", "En cambio", "Es por ello que").
+4. En algún párrafo usa la enumeración del autor: "En primer lugar aparece...; en segunda
+   instancia está...; y finalmente...".
+5. Incluye al menos: 2 paréntesis con fuente o aclaración, 1 par de comillas angulares « » sobre
+   un concepto, y 1 "etc." entre paréntesis.
+6. Cierra cada párrafo con un hecho concreto o un dato, nunca con moraleja ("esto nos enseña",
+   "permite entender", "es necesario recordar").
+7. Repite el término técnico exacto si es el justo ("suelo urbano", "calidad de vida",
+   "uso del suelo"): el autor lo repite, no lo sustituye por sinónimos.
+8. Escribe todo en español, sin palabras en otro idioma salvo nombres propios y citas.
+Devuelve ÚNICAMENTE el texto final, sin comentarios ni saludos.
+"""
+
+PROMPT_FINAL = """
+Eres un historiador que escribe para una revista de divulgación seria: lenguaje directo y claro, cercano al que usa un buen profesor cuando explica en clase, sin perder la formalidad académica. Reescribe el borrador conservando todo su contenido, pero eliminando por completo la cadencia de IA y la estructura de "ensayo clásico".
+""" + REGLA_NO_RESUMIR + """
+ESTRUCTURA DE PÁRRAFOS: mantén la división en párrafos del borrador (no vuelvas a juntarlos).
+DESTRUYE EL "ENSAYO CLÁSICO" (OBLIGATORIO):
+A. PROHIBIDAS las fórmulas de importancia y grandeza. No uses ninguna de estas ni variantes parecidas:
+"se sitúa entre los episodios más...", "uno de los acontecimientos más...", "el conflicto fracturó profundamente...", "es un hito fundamental", "marcó un hito", "representa un testimonio", "constituye un testimonio", "un antes y un después", "dejó una huella imborrable", "sentó las bases", "no puede entenderse sin", "se erige como", "da cuenta de", "pone de manifiesto", "en el marco de", "a lo largo de la historia", "sin precedentes", "de gran relevancia", "de suma importancia", "trascendental", "es posible afirmar", "resulta evidente", "cabe mencionar", "asimismo", "no obstante", "por consiguiente", "en última instancia".
+B. EN VEZ DE ADJETIVOS DE IMPORTANCIA, MUESTRA EL HECHO: no digas que algo "fue fundamental" o "transformó profundamente"; di qué cambió, quién lo hizo, cuándo y qué pasó después.
+Mal: "La Revolución Francesa es un hito fundamental que fracturó profundamente la sociedad europea."
+Bien: "Después de 1789, en Francia ya no mandaba solo el rey. Los nobles perdieron sus privilegios y muchos huyeron al extranjero."
+Mal: "Este documento representa un testimonio de la lucha por los derechos."
+Bien: "El documento recoge lo que pedían los diputados del Tercer Estado: igualdad ante la ley y libertad de expresión."
+C. SUJETO Y VERBO CLAROS: prefiere "los diputados aprobaron" a "se produjo la aprobación por parte de los diputados". Evita la voz pasiva con "se" y las nominalizaciones (la implementación, la consolidación, la configuración).
+D. INICIOS DE ORACIÓN: menos de un tercio de las oraciones puede empezar con "El", "La", "Los", "Las" o "Se". Abre las demás con una fecha, un lugar, un nombre propio, un complemento, un verbo o una subordinada.
+E. CONECTORES SENCILLOS: usa "pero", "por eso", "así", "después", "entonces", "aun así", "en cambio". Nada de conectores de manual.
+REGLAS DE ESTILO (aplícalas sin acortar el texto):
+ENUMERACIONES: si el borrador enumera 3 o 4 elementos en una sola frase ("A, B, C y D"), repártelos en dos oraciones con verbos distintos. Todos los elementos se mantienen.
+NADA DE PARES SIMÉTRICOS AL CIERRE DE LAS ORACIONES ("...la política y la sociedad"): separa las ideas en frases con distinto verbo, sin perder ninguna.
+EXPRESIONES VETADAS (NO USES NINGUNA): "al tiempo que", "a esto se suma", "a su vez", "ante este panorama", "entre los que destacan", "cabe destacar", "es fundamental", "es crucial", "enfrenta un reto", "fomentar", "abordar", "mediante", "reside en", "en este sentido", "en este contexto", "por otro lado", "no solo... sino también", "juega un papel", "hoy en día", "cada vez más", "panorama", "paradigma", "potenciar", "integral", "clave para", "en conclusión", "en definitiva". Reemplázalas por una expresión común; no borres la idea que acompañan.
+CERO GERUNDIOS DE REMATE: no cierres una frase con coma + gerundio ("..., provocando..."). Usa punto seguido y un verbo conjugado.
+CIERRE SIN MORALEJA: si el último párrafo termina en una reflexión genérica, reescríbela como una afirmación concreta. No borres el párrafo de cierre.
+RITMO IRREGULAR: alterna sin patrón fijo frases cortas (4 a 8 palabras) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas.
+VOCABULARIO: prefiere la palabra común sobre la culta ("usar" en vez de "utilizar", "hacer" en vez de "llevar a cabo", "empezar" en vez de "iniciar").
+FORMATO: solo prosa en párrafos separados por una línea en blanco. Sin rayas largas (— o –), sin negritas, sin listas, sin títulos y sin comillas curvas.
+PUNTUACIÓN VARIADA: no todo es coma y punto. Usa alguna vez dos puntos, punto y coma, un paréntesis corto o una pregunta que el mismo texto responde, donde salga natural.
+PALABRA CONCRETA, NO LA PRIMERA QUE SALE: entre dos formas correctas de decir algo, elige la más específica y menos de plantilla ("los nobles vendieron sus tierras" en vez de "se produjeron cambios en la propiedad"). Repite una palabra si es la justa; no la cambies por un sinónimo solo para variar.
+SIN MOLDE FIJO: que los párrafos no sigan todos el mismo esquema (afirmación, explicación, consecuencia). Alguna oración puede empezar con "Y" o "Pero"; alguna puede ser una frase breve sin verbo. No redondees cada frase: un texto de persona tiene oraciones secas junto a otras más sueltas.
+CONECTORES AL INICIO: como máximo una oración de todo el texto puede abrir con "Además", "Sin embargo", "Por lo tanto", "Por ello", "De este modo", "Finalmente" o parecidos. Las demás entran directo con el sujeto o el hecho.
+IDIOMA: escribe todo en español. Ninguna palabra en chino, inglés ni otro idioma, salvo nombres propios y citas que ya vengan así en el texto.
+Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
+"""
+
+PROMPT_RAPIDO_TESIS = PROMPT_FINAL_TESIS.replace(
+    "1. Conserva la división de párrafos del borrador; divide solo los más largos, por donde cambia la idea.",
+    """1. ESTRUCTURA (hazlo en esta misma pasada): reordena las ideas dentro de cada párrafo y cambia
+la construcción de cada oración; no sigas el orden de frases del original. Divide solo los párrafos
+más largos, por donde cambia la idea. Nunca dejes una sola oración por párrafo.""",
+).replace("Reescribe el borrador", "Reescribe el texto")
+
 PROMPT_RAPIDO = PROMPT_FINAL.replace(
-    "ESTILO OBJETIVO (analizado de una tesis real de 2003):",
-    "ESTILO OBJETIVO (tesis chilena 2003, aplicado en esta misma pasada):",
-).replace("Reescribe el texto en español académico", "Reescribe el texto")
+    "ESTRUCTURA DE PÁRRAFOS: mantén la división en párrafos del borrador (no vuelvas a juntarlos).",
+    """ESTRUCTURA (hazlo en esta misma pasada):
+Reordena las ideas dentro de cada párrafo y cambia la construcción de cada oración; no sigas el orden de frases del original.
+Divide solo los párrafos más largos, por donde cambia la idea. Nunca dejes una sola oración por párrafo en todo el texto.
+Varía el largo de las oraciones de forma marcada: algunas de 4 a 8 palabras y otras de 25 a 35.
+No empieces los párrafos con una oración que los resume ni los cierres con una que concluye.""",
+).replace("Reescribe el borrador", "Reescribe el texto")
 
 PROMPT_CORRECCION = """
 Eres un corrector de estilo. Te paso el texto ORIGINAL, un TEXTO reescrito y una lista de PROBLEMAS detectados por una revisión automática.
@@ -1176,28 +1360,55 @@ Formato: solo prosa en párrafos separados por una línea en blanco, sin rayas l
 Devuelve ÚNICAMENTE el texto corregido.
 """
 
-# [MEJORA 0%] PROMPT_DETECTOR más agresivo con cambio sintáctico total
 PROMPT_DETECTOR = """
-Eres un editor humano experto en evadir detectores de IA. Un detector marcó las ORACIONES MARCADAS porque su estructura es demasiado predecible.
+Eres un editor que retoca a mano un párrafo en español. Un detector de texto generado por IA marcó las ORACIONES MARCADAS: su redacción es demasiado previsible.
 QUÉ DEBES HACER:
-1. CAMBIO SINTÁCTICO TOTAL: No te limites a cambiar sinónimos. Si la oración original era activa, cámbiala a pasiva (o viceversa). Si empezaba con el sujeto, empieza con un complemento circunstancial (tiempo, lugar, modo). Invierte el orden de las cláusulas.
-2. ROMPE EL RITMO: Si la oración marcada es larga, divídela en dos (una de ellas de menos de 6 palabras). Si es corta, fusiónala con la vecina usando un guion largo (—) o dos puntos.
-3. VOCABULARIO IMPREDECIBLE: Usa una palabra coloquial o inesperada en lugar del término académico genérico.
-4. PROHIBIDO: No uses conectores de manual ("Además", "Sin embargo", "Por lo tanto"). No cierres con gerundio. No resumas.
-Las oraciones NO marcadas déjalas casi intactas, solo ajusta el enlace para que fluya.
-Conserva TAL CUAL todas las fechas, cifras, nombres, instituciones y citas.
-Devuelve ÚNICAMENTE el párrafo reescrito, sin comentarios.
+Reescribe desde cero cada oración marcada: otra construcción sintáctica, otro orden de las piezas, otro verbo principal y otro largo. Cambiar sinónimos no sirve.
+Puedes partir una oración marcada en dos (una de ellas de menos de 9 palabras) o unirla con la vecina. Evita que dos oraciones seguidas midan parecido.
+Elige la palabra concreta y cotidiana en vez de la genérica. Sujeto y verbo claros, sin pasiva con "se" ni nominalizaciones.
+No abras con conectores de manual ("Además", "Sin embargo", "Por lo tanto", "Asimismo"). Sin coma + gerundio al final, sin enumeraciones de tres elementos, sin frases de importancia ("es fundamental", "cabe destacar", "juega un papel").
+Las oraciones NO marcadas quedan casi iguales: solo ajusta el enlace con las que cambiaste.
+PROHIBIDO RESUMIR: conserva todas las ideas y TAL CUAL las fechas, cifras, nombres, instituciones y citas. La extensión del párrafo queda entre 95% y 115% de la actual.
+No agregues información ni opiniones nuevas.
+Formato: un solo párrafo de prosa, sin rayas largas, sin negritas, sin listas y sin comillas curvas.
+Devuelve ÚNICAMENTE el párrafo reescrito.
+"""
+
+# [PERFIL TESIS 2003] Versión del prompt de detector que reescribe con la voz del autor
+PROMPT_DETECTOR_TESIS = """
+Eres el autor de una tesis de geografía social de Chile, 2003. Un detector de IA marcó las
+ORACIONES MARCADAS de este párrafo porque su redacción es demasiado previsible.
+QUÉ DEBES HACER:
+Reescribe cada oración marcada con la voz del autor: otra construcción sintáctica, otro orden de
+las piezas, otro verbo principal. Usa sus fórmulas naturales ("se puede observar que", "existe un
+número significativo de", "esto quiere decir que", "lo cual hace pensar que") y sus inicios
+("De acuerdo con lo anterior", "En primer lugar", "Por tanto", "En este sentido", "Sin embargo",
+"De lo anterior", "En cambio", "Es por ello que").
+Puedes partir una oración marcada en dos (una de enlace de 8-12 palabras) o unirla con la vecina
+formando una frase larga con dos subordinadas entre comas.
+Repite el término técnico exacto si es el justo; no lo cambies por un sinónimo de plantilla.
+No uses fórmulas de IA moderna: "no solo... sino también", "juega un papel", "panorama",
+"paradigma", "transformador", "hito", "testimonio", "en el marco de", "cabe señalar".
+Las oraciones NO marcadas quedan casi iguales: solo ajusta el enlace con las que cambiaste.
+PROHIBIDO RESUMIR: conserva todas las ideas y TAL CUAL las fechas, cifras, nombres, instituciones
+y citas. La extensión del párrafo queda entre 95% y 115% de la actual.
+Formato: un solo párrafo de prosa, sin rayas largas, sin negritas, sin listas. Conserva las
+«comillas angulares» y los paréntesis con fuente si ya existían.
+Devuelve ÚNICAMENTE el párrafo reescrito.
 """
 
 def con_muestra(prompt, muestra):
+    """Agrega al prompt la muestra de escritura del usuario, si la hay."""
     if not muestra or contar_palabras(muestra) < 40:
         return prompt
     return (prompt + "\nMUESTRA DE ESTILO (escrita por la persona que firma el texto). Imita su voz: el largo y el ritmo de "
-            "sus oraciones, su vocabulario, su puntuación y la forma en que une las ideas. Si la muestra contradice "
-            "alguna regla de estilo anterior, manda la muestra. No copies su contenido ni sus datos, y no la "
-            "menciones.\n<<<\n" + muestra + "\n>>>\n")
+            "sus oraciones, su vocabulario, su puntuación y la forma en que une las ideas. Imita también sus imperfecciones "
+            "reales (comas de inciso, paréntesis con fuentes, «comillas angulares», 'mas' sin tilde, tildes en demostrativos): "
+            "no las corrijas ni las modernices. Si la muestra contradice alguna regla de estilo anterior, manda la muestra. "
+            "No copies su contenido ni sus datos, y no la menciones.\n<<<\n" + muestra + "\n>>>\n")
 
 def instrucciones_de_medida(original, partir=False):
+    """Le dice al modelo cuánto mide el original y qué datos no puede perder."""
     datos = extraer_datos_clave(original)
     par = len(dividir_parrafos(original))
     if partir:
@@ -1216,6 +1427,7 @@ def instrucciones_de_medida(original, partir=False):
 # ENRUTADOR
 # ==========================================
 def armar_plan():
+    """Devuelve {paso: [proveedores en orden de intento]}."""
     final = modelo_final_id
     disponibles = [pid for pid in ORDEN_CALIDAD if CLAVES.get(pid)]
     mezcla = [pid for pid in proveedores_mezcla if CLAVES.get(pid)] or disponibles
@@ -1238,6 +1450,7 @@ def pausar_proveedor(pid, segundos):
     PAUSADOS[pid] = max(PAUSADOS.get(pid, 0), time.time() + segundos)
 
 def esperar_cuota(pid, avanzar, esperas):
+    """Si el proveedor principal está en pausa por cuota por minuto, espera a que se renueve."""
     resta = PAUSADOS.get(pid, 0) - time.time()
     if not 0 < resta <= PAUSA_CUOTA or esperas[0] >= MAX_ESPERAS:
         return
@@ -1249,6 +1462,7 @@ def esperar_cuota(pid, avanzar, esperas):
     PAUSADOS.pop(pid, None)
 
 def generar(system_prompt, texto, temperature, paso, plan, avisos, usados, tiempos):
+    """Prueba los proveedores del paso en orden, saltando los que están en pausa."""
     errores = []
     limite = TIEMPO_MAXIMO["final"] if paso in ("final", "correccion", "detector") else TIEMPO_MAXIMO["intermedio"]
     inicio = time.monotonic()
@@ -1289,6 +1503,7 @@ def formato_tiempo(segundos):
     return f"{segundos // 60} min {segundos % 60} s" if segundos >= 60 else f"{segundos} s"
 
 def explicar_error(e):
+    """Traduce el error técnico a una explicación y una acción concreta."""
     t = str(e)
     bajo = t.lower()
     if "413" in t or "request too large" in bajo or "too large" in bajo or "context_length" in bajo:
@@ -1309,10 +1524,12 @@ PALABRAS_POR_BLOQUE = 420
 BLOQUES_EN_PARALELO = 2
 
 def es_titulo(parrafo):
+    """Una línea corta sin punto final se trata como título y se deja tal cual."""
     p = parrafo.strip()
     return 0 < contar_palabras(p) <= 18 and p[-1:] not in ".!?;:" and "\n" not in p
 
 def dividir_en_bloques(texto):
+    """Agrupa párrafos en bloques de ~420 palabras. Devuelve [(es_titulo, texto)]."""
     bloques, actual = [], []
     for par in dividir_parrafos(texto):
         if es_titulo(par):
@@ -1328,6 +1545,7 @@ def dividir_en_bloques(texto):
     return bloques
 
 def plan_para_bloque(plan, indice):
+    """Cada bloque empieza los pasos intermedios con un proveedor distinto, para repartir la carga."""
     nuevo = dict(plan)
     for paso in ("ingles", "espanol", "estructura"):
         lista = plan[paso]
@@ -1340,37 +1558,49 @@ def plan_para_bloque(plan, indice):
     return nuevo
 
 def procesar_bloque(texto_base, plan, partir, avisos, opciones):
+    """Todo el flujo para un bloque. No toca la interfaz (corre en paralelo)."""
     usados, tiempos = {}, {}
+    tesis = opciones.get("tesis", False)
+    limpiar = lambda t: clean_text(t, keep_angulares=tesis)
     medida = instrucciones_de_medida(texto_base, partir=partir)
     if not opciones["profundo"]:
+        # MODO RÁPIDO: una sola llamada que reescribe, reestructura y limpia a la vez
+        prompt_rap = PROMPT_RAPIDO_TESIS if tesis else PROMPT_RAPIDO
         entrada = f"{medida}\n\nTEXTO A REESCRIBIR:\n{texto_base}"
-        texto_generado, modelo_final = generar(con_muestra(PROMPT_RAPIDO, opciones.get("muestra")), entrada,
+        texto_generado, modelo_final = generar(con_muestra(prompt_rap, opciones.get("muestra")), entrada,
                                                TEMP_FINAL, "final", plan, avisos, usados, tiempos)
-        texto_generado, _ = clean_text(texto_generado)
+        texto_generado, _ = limpiar(texto_generado)
         return revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos)
     medida_igual = instrucciones_de_medida(texto_base, partir=False)
+    # CAPA B: retrotraducción o paráfrasis
     if opciones["retro"]:
         texto_en, _ = generar(PROMPT_EN, texto_base, 0.6, "ingles", plan, avisos, usados, tiempos)
         borrador, _ = generar(PROMPT_ES, f"{medida_igual}\n\nTEXTO:\n{texto_en}", 0.85, "espanol", plan, avisos, usados, tiempos)
     else:
         borrador, _ = generar(PROMPT_PARAFRASIS, f"{medida_igual}\n\nTEXTO:\n{texto_base}", 0.85, "espanol", plan, avisos, usados, tiempos)
-    borrador, _ = clean_text(borrador)
+    borrador, _ = limpiar(borrador)
+    # CAPA DE ESTRUCTURA
     if partir:
         try:
             reestructurado, _ = generar(PROMPT_ESTRUCTURA, f"{medida}\n\nTEXTO A REESTRUCTURAR:\n{borrador}",
                                         0.85, "estructura", plan, avisos, usados, tiempos)
-            reestructurado, _ = clean_text(reestructurado)
+            reestructurado, _ = limpiar(reestructurado)
             if contar_palabras(reestructurado) >= 0.88 * contar_palabras(texto_base):
                 borrador = reestructurado
         except Exception as e_est:
             avisos.append(f"No se pudo aplicar la capa de estructura en un bloque ({e_est}).")
+    # REDACCIÓN FINAL
+    prompt_fin = PROMPT_FINAL_TESIS if tesis else PROMPT_FINAL
     entrada_final = f"{medida}\n\nTEXTO ORIGINAL (referencia de contenido y extensión):\n{texto_base}\n\nBORRADOR A REESCRIBIR:\n{borrador}"
-    texto_generado, modelo_final = generar(con_muestra(PROMPT_FINAL, opciones.get("muestra")), entrada_final,
+    texto_generado, modelo_final = generar(con_muestra(prompt_fin, opciones.get("muestra")), entrada_final,
                                            TEMP_FINAL, "final", plan, avisos, usados, tiempos)
-    texto_generado, _ = clean_text(texto_generado)
+    texto_generado, _ = limpiar(texto_generado)
     return revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos)
 
 def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, partir, avisos, opciones, usados, tiempos):
+    """CAPA C: revisión en código y, solo si hace falta, una corrección."""
+    tesis = opciones.get("tesis", False)
+    limpiar = lambda t: clean_text(t, keep_angulares=tesis)
     problemas_iniciales, _ = auditar_texto(texto_generado, texto_base, partir)
     rondas = 2 if opciones["profundo"] else 1
     for ronda in range(rondas):
@@ -1387,20 +1617,21 @@ def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, parti
             if autor:
                 plan_corr = dict(plan)
                 plan_corr["correccion"] = [p for p in plan["correccion"] if p != autor] + [autor]
+        prompt_corr = PROMPT_CORRECCION + (ESTILO_2003 if tesis else "")
         try:
             corregido, _ = generar(
-                con_muestra(PROMPT_CORRECCION, opciones.get("muestra")),
+                con_muestra(prompt_corr, opciones.get("muestra")),
                 f"{medida}\n\nPROBLEMAS DETECTADOS:\n{lista}\n\nORIGINAL:\n{texto_base}\n\nTEXTO:\n{texto_generado}",
                 0.7, "correccion", plan_corr, avisos, usados, tiempos,
             )
         except Exception as e_corr:
             avisos.append(f"No se pudo hacer la corrección automática de un bloque ({e_corr}).")
             break
-        corregido, _ = clean_text(corregido)
+        corregido, _ = limpiar(corregido)
+        nuevos, _ = auditar_texto(corregido, texto_base, partir)
         fid_antes = len(fidelidad)
         fid_despues = len(problemas_de_fidelidad(corregido, texto_base, partir))
         no_acorta = contar_palabras(corregido) >= 0.95 * contar_palabras(texto_generado) or fid_despues < fid_antes
-        nuevos, _ = auditar_texto(corregido, texto_base, partir)
         if len(nuevos) < len(problemas) and fid_despues <= fid_antes and no_acorta:
             texto_generado = corregido
         else:
@@ -1408,22 +1639,29 @@ def revisar_bloque(texto_generado, modelo_final, texto_base, medida, plan, parti
     return texto_generado, modelo_final, usados, tiempos, len(problemas_iniciales)
 
 def reescribir_parrafo_marcado(parrafo, marcadas, plan, opciones, avisos, usados, tiempos):
+    """Reescribe un párrafo marcado por un detector. Si pierde contenido, devuelve el párrafo sin cambios."""
+    tesis = opciones.get("tesis", False)
+    limpiar = lambda t: clean_text(t, keep_angulares=tesis)
     lista = "\n".join(f"- {o}" for o in marcadas) if marcadas else "- (todo el párrafo)"
     entrada = (f"El párrafo tiene {contar_palabras(parrafo)} palabras.\n\nORACIONES MARCADAS:\n{lista}\n\n"
                f"PÁRRAFO:\n{parrafo}")
+    prompt_det = PROMPT_DETECTOR_TESIS if tesis else PROMPT_DETECTOR
     try:
-        nuevo, _ = generar(con_muestra(PROMPT_DETECTOR, opciones.get("muestra")), entrada, TEMP_FINAL,
+        nuevo, _ = generar(con_muestra(prompt_det, opciones.get("muestra")), entrada, TEMP_FINAL,
                            "detector", plan, avisos, usados, tiempos)
     except Exception:
         return parrafo
-    nuevo, _ = clean_text(nuevo)
-    nuevo = "  ".join(dividir_parrafos(nuevo))
+    nuevo, _ = limpiar(nuevo)
+    nuevo = " ".join(dividir_parrafos(nuevo))
     largo_ok = 0.88 * contar_palabras(parrafo) <= contar_palabras(nuevo) <= 1.30 * contar_palabras(parrafo)
     if not nuevo or not largo_ok or datos_faltantes(parrafo, nuevo):
         return parrafo
     return nuevo
 
 def ajustar_con_detectores(texto, plan, opciones, avisos, usados, tiempos, avanzar):
+    """CAPA D: mide, reescribe solo lo marcado y vuelve a medir. Se queda con la versión de menor puntaje."""
+    tesis = opciones.get("tesis", False)
+    limpiar = lambda t: clean_text(t, keep_angulares=tesis)
     historial, mejor = [], None
     def peor_de(mediciones):
         validas = [m["ia"] for m in mediciones if "ia" in m]
@@ -1474,7 +1712,7 @@ def ajustar_con_detectores(texto, plan, opciones, avisos, usados, tiempos, avanz
                 cambiados += 1
         if not cambiados:
             break
-        texto, _ = clean_text("\n\n".join(parrafos))
+        texto, _ = limpiar("\n\n".join(parrafos))
     peor, texto_final, mediciones = mejor
     info = {"mediciones": [{k: v for k, v in m.items() if k != "frases"} for m in mediciones],
             "historial": historial, "rondas": max(0, len(historial) - 1)}
@@ -1487,6 +1725,7 @@ def ajustar_con_detectores(texto, plan, opciones, avisos, usados, tiempos, avanz
     return texto_final, info
 
 def procesar(texto_original, estado):
+    """Corre todo el flujo y devuelve (texto_final, modelo, avisos, auditoria, texto_base)."""
     avisos = []
     plan = armar_plan()
     inicio_total = time.monotonic()
@@ -1495,8 +1734,10 @@ def procesar(texto_original, estado):
         estado.update(label=f"{texto} ({round(time.monotonic() - inicio_total)} s)")
     partir = usar_estructura
     opciones = {"retro": usar_retrotraduccion, "auditoria": usar_auditoria, "profundo": modo_profundo,
-                "muestra": muestra_estilo}
+                "muestra": muestra_estilo, "tesis": estilo_tesis_2003}
+    limpiar = lambda t: clean_text(t, keep_angulares=estilo_tesis_2003)
     def una_pasada(texto_entrada, partir_p, numero):
+        """Humaniza un texto completo por bloques."""
         sufijo = f" (pasada {numero} de {pasadas})" if pasadas > 1 else ""
         bloques = dividir_en_bloques(texto_entrada)
         a_procesar = [i for i, (titulo, _) in enumerate(bloques) if not titulo]
@@ -1548,9 +1789,9 @@ def procesar(texto_original, estado):
                 usados_p.setdefault(k, v)
             for k, v in tiempos_b.items():
                 tiempos_p[k] = max(tiempos_p.get(k, 0), v)
-        return clean_text("\n\n".join(partes))[0], modelo_p, usados_p, tiempos_p, antes_p, total
+        return limpiar("\n\n".join(partes))[0], modelo_p, usados_p, tiempos_p, antes_p, total
     avanzar("Limpiando caracteres ocultos y formato")
-    texto_base, _ = clean_text(texto_original)
+    texto_base, _ = limpiar(texto_original)
     for pid in {p for pasos in plan.values() for p in pasos}:
         if pid not in MODELOS_RESUELTOS and PROVEEDORES[pid]["tipo"] != "gemini":
             try:
