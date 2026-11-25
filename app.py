@@ -48,16 +48,16 @@ PROVEEDORES = {
     "openrouter": { "nombre": "OpenRouter",  "clave": "OPENROUTER_API_KEY",  "tipo": "openai",     "base": "https://openrouter.ai/api/v1" },
 }
 
-# Orden por defecto para elegir el modelo de la redacción final (mejor español primero)
+# Orden por defecto para elegir el modelo de la redacción final
 ORDEN_CALIDAD = ["anthropic", "openai", "deepseek", "nvidia", "mistral", "gemini", "groq", "cerebras", "openrouter"]
 
 # Orden por velocidad: los pasos intermedios usan primero los más rápidos
 ORDEN_VELOCIDAD = ["groq", "cerebras", "gemini", "openai", "anthropic", "deepseek", "mistral", "nvidia", "openrouter"]
 
-# Tiempo máximo por llamada (segundos). Si un modelo no responde, se pasa al siguiente.
+# Tiempo máximo por llamada (segundos)
 TIEMPO_MAXIMO = {"intermedio": 30, "final": 60}
 
-# Proveedores en pausa: {id: hora hasta la que no se usan}. Se comparte entre bloques y entre textos.
+# Proveedores en pausa
 @st.cache_resource(show_spinner=False)
 def _proveedores_pausados():
     return {}
@@ -77,7 +77,7 @@ class ProveedorNoDisponible(RuntimeError):
 
 CLAVES = {pid: leer_secreto(p["clave"]) for pid, p in PROVEEDORES.items()}
 
-# Detectores con API pública. QuillBot y Grammarly no ofrecen API de detección: se revisan a mano.
+# Detectores con API pública
 GPTZERO_API_KEY = leer_secreto("GPTZERO_API_KEY")
 COPYLEAKS_EMAIL = leer_secreto("COPYLEAKS_EMAIL")
 COPYLEAKS_API_KEY = leer_secreto("COPYLEAKS_API_KEY")
@@ -86,12 +86,13 @@ RONDAS_DETECTOR = 3
 OBJETIVO_IA = 0.5
 PARRAFOS_POR_RONDA = 8
 
-# [MEJORA 0%] Temperatura ligeramente más alta para romper la predictibilidad
-TEMP_FINAL = 1.05
+# [MEJORA 0%] Temperatura alta para romper la predictibilidad
+TEMP_FINAL = 1.20
 
-# Variación mínima del largo de las oraciones (desviación / promedio). Un texto de persona suele pasar de 0,5
+# Variación mínima del largo de las oraciones
 RITMO_MINIMO = 0.50
 
+# Modelos excluidos
 EXCLUIDOS = (
     "whisper", "tts", "guard", "safeguard", "playai", "orpheus", "embed", "vision", "audio",
     "compound", "allam", "realtime", "image", "transcribe", "search", "moderation", "ocr",
@@ -101,11 +102,11 @@ EXCLUIDOS = (
     "neva", "fuyu", "paligemma", "nemoretriever", "riva", "cosmos", "bge", "e5-", "arctic-embed"
 )
 
-# Modelos chicos: "8b", "-1.5b" (pero no "17b" ni "a3b", que son otra cosa)
+# Modelos chicos
 PATRON_CHICO = re.compile(r"(?<![a-z0-9.])[1-9](?:\.\d)?b\b")
 DEBILES = ("mini", "nano", "small", "tiny", "lite", "instant", "haiku", "ministral")
 
-# En catálogos grandes (NVIDIA, OpenRouter, Groq, Cerebras) solo se aceptan familias de modelos de texto
+# Familias de modelos de texto
 FAMILIAS_TEXTO = (
     "llama", "mistral", "mixtral", "qwen", "deepseek", "gemma", "kimi", "glm", "nemotron",
     "phi-", "minimax", "gpt-oss", "command", "hermes", "granite", "olmo", "jamba", "seed"
@@ -139,10 +140,7 @@ def _puntaje_modelo(pid, mid, creado):
     gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b", "ultra")) else 0
     return (gratis, mezcla_idioma, debil, razonador, gigante, pref, -(creado or 0))
 
-# Cambiar este número obliga a volver a detectar los modelos tras una actualización del código
-VERSION_MODELOS = "v14c"
-
-# Modelos ya detectados en el hilo principal (los bloques en paralelo los leen de aquí)
+VERSION_MODELOS = "v14d"
 MODELOS_RESUELTOS = {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -185,7 +183,7 @@ def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
     return [c[0] for c in candidatos]
 
 def _post_con_ajustes(url, headers, payload, tipo, limite=90):
-    """POST que se adapta a lo que cada modelo acepta (temperatura, tokens, penalizaciones)."""
+    """POST que se adapta a lo que cada modelo acepta."""
     ultimo = None
     for intento in range(5):
         resp = requests.post(url, headers=headers, json=payload, timeout=(10, limite))
@@ -219,7 +217,7 @@ def _post_con_ajustes(url, headers, payload, tipo, limite=90):
     return ultimo
 
 def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
-    """Llama a un proveedor probando sus mejores modelos. Devuelve (texto, 'Proveedor (modelo)')."""
+    """Llama a un proveedor probando sus mejores modelos."""
     p = PROVEEDORES[pid]
     clave = CLAVES.get(pid)
     if not clave:
@@ -255,12 +253,12 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
                     "model": modelo,
                     "messages": [{"role": "system", "content": system_prompt},
                                  {"role": "user", "content": user_text}],
-                    "temperature": temperature, "top_p": 0.95, "max_tokens": max_salida,
+                    "temperature": temperature, "top_p": 0.92, "max_tokens": max_salida,
                 }
-                # [MEJORA 0%] Penalizaciones más altas para forzar vocabulario diverso y evitar repeticiones rítmicas
+                # [MEJORA 0%] Penalizaciones altas para romper repetición rítmica
                 if pid in ("groq", "openrouter", "deepseek", "openai"):
-                    payload["frequency_penalty"] = 0.3
-                    payload["presence_penalty"] = 0.3
+                    payload["frequency_penalty"] = 0.35
+                    payload["presence_penalty"] = 0.35
                 if "gpt-oss" in modelo.lower():
                     payload["reasoning_effort"] = "low"
                 if pid == "deepseek":
@@ -296,7 +294,7 @@ def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
     raise RuntimeError(ultimo_error)
 
 def quitar_razonamiento(texto):
-    """Algunos modelos devuelven su razonamiento entre <think>...</think>: se elimina."""
+    """Elimina el razonamiento entre <think>... </think>."""
     if not texto:
         return ""
     texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL | re.IGNORECASE)
@@ -304,7 +302,7 @@ def quitar_razonamiento(texto):
     return texto.strip()
 
 # ==========================================
-# LLAMADA A GEMINI CON REINTENTO ANTE ERRORES TEMPORALES
+# LLAMADA A GEMINI
 # ==========================================
 def llamar_gemini(client, contents, system_instruction):
     try:
@@ -430,7 +428,7 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
     return r.strip(), counts
 
 # ==========================================
-# CAPA C: AUDITORÍA AUTOMÁTICA DEL RESULTADO
+# CAPA C: AUDITORÍA AUTOMÁTICA
 # ==========================================
 FRASES_VETADAS = [
     "al tiempo que", "a esto se suma", "herramientas como", "a su vez", "ante este panorama",
@@ -662,7 +660,7 @@ def auditar_texto(texto, referencia=None, partir=False):
     return problemas, metricas
 
 # ==========================================
-# CAPA D: VERIFICACIÓN CON DETECTORES REALES
+# CAPA D: VERIFICACIÓN CON DETECTORES
 # ==========================================
 def detectores_activos():
     activos = []
@@ -768,120 +766,58 @@ def oraciones_marcadas(parrafo, frases):
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap');
-
 :root {
---bg: #0F1114;
---surface: #171A1F;
---surface-2: #20242B;
---surface-3: #2A2F38;
---ink: #ECEEF1;
---ink-soft: #A6ACB6;
---accent: #F2552C;
---accent-press: #DB4A22;
---on-accent: #0F1114;
---human: #22D3E6;
---paper: #F2F1EC;
---paper-ink: #1A1B1E;
---paper-soft: #5B5E66;
+--bg: #0F1114; --surface: #171A1F; --surface-2: #20242B; --surface-3: #2A2F38;
+--ink: #ECEEF1; --ink-soft: #A6ACB6; --accent: #F2552C; --accent-press: #DB4A22;
+--on-accent: #0F1114; --human: #22D3E6; --paper: #F2F1EC; --paper-ink: #1A1B1E; --paper-soft: #5B5E66;
 --font-ui: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
 --font-page: 'Newsreader', Georgia, 'Times New Roman', serif;
---t-sm: 0.8125rem;
---t-base: 1rem;
---t-md: 1.1875rem;
---t-lg: 1.75rem;
---t-xl: clamp(2.75rem, 6.5vw, 5.25rem);
---r: 4px;
---dur-micro: 120ms;
---dur-short: 200ms;
+--t-sm: 0.8125rem; --t-base: 1rem; --t-md: 1.1875rem; --t-lg: 1.75rem; --t-xl: clamp(2.75rem, 6.5vw, 5.25rem);
+--r: 4px; --dur-micro: 120ms; --dur-short: 200ms;
 }
-
 html, body { overflow-x: clip; }
 .stApp { background-color: var(--bg); color: var(--ink); font-family: var(--font-ui); }
-.stApp [data-testid="stMarkdownContainer"],
-.stApp label, .stApp button, .stApp input, .stApp textarea { font-family: var(--font-ui); }
+.stApp [data-testid="stMarkdownContainer"], .stApp label, .stApp button, .stApp input, .stApp textarea { font-family: var(--font-ui); }
 [data-testid="stHeader"] { background-color: transparent; }
 #MainMenu, footer, [data-testid="stHeaderActionElements"] { display: none; }
-
 .block-container { max-width: 1240px; padding: 2.5rem 2rem 3rem 2rem !important; }
-
-.stApp h1.app-title {
-font-family: var(--font-ui) !important; font-size: var(--t-lg) !important; font-weight: 600 !important;
-letter-spacing: -0.02em; line-height: 1.1 !important; color: var(--ink) !important; margin: 0 !important; padding: 0 !important;
-overflow-wrap: break-word; min-width: 0;
-}
+.stApp h1.app-title { font-family: var(--font-ui) !important; font-size: var(--t-lg) !important; font-weight: 600 !important; letter-spacing: -0.02em; line-height: 1.1 !important; color: var(--ink) !important; margin: 0 !important; padding: 0 !important; overflow-wrap: break-word; min-width: 0; }
 .stApp p.app-lead { font-size: var(--t-base); color: var(--ink-soft); margin: 0.625rem 0 2.5rem 0 !important; max-width: 60ch; line-height: 1.5; }
-
 .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin: 0 0 0.625rem 0; }
 .panel-title { font-size: var(--t-md); font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
 .panel-meta { font-size: var(--t-sm); color: var(--ink-soft); font-variant-numeric: tabular-nums; }
-
-[data-testid="stTextArea"] [data-baseweb="textarea"] {
-background-color: var(--surface) !important; border: 1px solid var(--surface-3) !important;
-border-radius: var(--r) !important;
-transition: border-color var(--dur-micro) ease;
-}
+[data-testid="stTextArea"] [data-baseweb="textarea"] { background-color: var(--surface) !important; border: 1px solid var(--surface-3) !important; border-radius: var(--r) !important; transition: border-color var(--dur-micro) ease; }
 [data-testid="stTextArea"] [data-baseweb="textarea"]:focus-within { border-color: var(--human) !important; }
-[data-testid="stTextArea"] textarea {
-background-color: var(--surface) !important; color: var(--ink) !important;
--webkit-text-fill-color: var(--ink) !important;
-font-size: var(--t-base) !important; line-height: 1.6 !important; padding: 1.25rem !important;
-caret-color: var(--human);
-}
+[data-testid="stTextArea"] textarea { background-color: var(--surface) !important; color: var(--ink) !important; -webkit-text-fill-color: var(--ink) !important; font-size: var(--t-base) !important; line-height: 1.6 !important; padding: 1.25rem !important; caret-color: var(--human); }
 [data-testid="stTextArea"] textarea::placeholder { color: var(--ink-soft); -webkit-text-fill-color: var(--ink-soft); }
 [data-testid="InputInstructions"] { color: var(--ink-soft) !important; }
-
-.hoja {
-height: 400px; overflow-y: auto; box-sizing: border-box;
-background-color: var(--paper); color: var(--paper-ink);
-border-radius: var(--r); padding: 1.75rem 2rem;
-}
-.hoja p {
-font-family: var(--font-page) !important; font-size: 1.125rem; line-height: 1.65;
-color: var(--paper-ink); margin: 0 0 1em 0; max-width: 68ch;
-}
+.hoja { height: 400px; overflow-y: auto; box-sizing: border-box; background-color: var(--paper); color: var(--paper-ink); border-radius: var(--r); padding: 1.75rem 2rem; }
+.hoja p { font-family: var(--font-page) !important; font-size: 1.125rem; line-height: 1.65; color: var(--paper-ink); margin: 0 0 1em 0; max-width: 68ch; }
 .hoja p:last-child { margin-bottom: 0; }
-.hoja.vacia {
-background-color: var(--surface-2); color: var(--ink-soft);
-display: flex; flex-direction: column; justify-content: center; padding: 2rem 2.5rem;
-}
+.hoja.vacia { background-color: var(--surface-2); color: var(--ink-soft); display: flex; flex-direction: column; justify-content: center; padding: 2rem 2.5rem; }
 .hoja.vacia .vacia-titulo { font-family: var(--font-page); font-size: 1.5rem; line-height: 1.25; color: var(--ink); margin: 0 0 0.5rem 0; max-width: 22ch; }
 .hoja.vacia .vacia-texto { font-size: var(--t-base); color: var(--ink-soft); margin: 0; max-width: 40ch; line-height: 1.5; }
-
-.stButton > button, [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-secondary"] {
-min-height: 44px; border-radius: var(--r) !important; font-weight: 600;
-transition: background-color var(--dur-micro) ease, transform var(--dur-micro) ease;
-}
-[data-testid="stBaseButton-primary"] {
-background-color: var(--accent) !important; color: var(--on-accent) !important; border: 0 !important;
-}
+.stButton > button, [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-secondary"] { min-height: 44px; border-radius: var(--r) !important; font-weight: 600; transition: background-color var(--dur-micro) ease, transform var(--dur-micro) ease; }
+[data-testid="stBaseButton-primary"] { background-color: var(--accent) !important; color: var(--on-accent) !important; border: 0 !important; }
 .stApp .stButton button p, .stApp [data-testid="stFormSubmitButton"] button p { font-size: var(--t-base) !important; font-weight: 600 !important; }
 [data-testid="stBaseButton-primary"] p { color: var(--on-accent) !important; }
 [data-testid="stBaseButton-primary"]:hover { background-color: var(--accent-press) !important; }
-[data-testid="stBaseButton-secondary"] {
-background-color: var(--surface-2) !important; color: var(--ink) !important; border: 0 !important;
-}
+[data-testid="stBaseButton-secondary"] { background-color: var(--surface-2) !important; color: var(--ink) !important; border: 0 !important; }
 [data-testid="stBaseButton-secondary"]:hover { background-color: var(--surface-3) !important; color: var(--ink) !important; }
 [data-testid="stBaseButton-primary"]:active, [data-testid="stBaseButton-secondary"]:active { transform: translateY(1px); }
-.stApp button:focus-visible, .stApp input:focus-visible, .stApp textarea:focus-visible, .stApp [role="checkbox"]:focus-visible {
-outline: 2px solid var(--human) !important; outline-offset: 2px; transition: none;
-}
-
+.stApp button:focus-visible, .stApp input:focus-visible, .stApp textarea:focus-visible, .stApp [role="checkbox"]:focus-visible { outline: 2px solid var(--human) !important; outline-offset: 2px; transition: none; }
 [data-testid="stSidebar"] { background-color: var(--surface); border-right: 0; }
 [data-testid="stSidebar"] h3 { font-family: var(--font-ui); font-size: var(--t-md); font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
 .motor { background-color: var(--surface-2); border-radius: var(--r); padding: 0.75rem 0.875rem; margin: 0.25rem 0 1.25rem 0; }
 .motor-label { font-size: var(--t-sm); color: var(--ink-soft); margin: 0; }
 .motor-valor { font-size: var(--t-base); color: var(--ink); margin: 0.125rem 0 0 0; font-weight: 500; overflow-wrap: anywhere; }
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { font-size: var(--t-base); color: var(--ink); }
-
 [data-testid="stAlert"] { border-radius: var(--r); }
 [data-testid="stExpander"] details, [data-testid="stStatusWidget"] { border-radius: var(--r); }
-[data-testid="stTextInput"] [data-baseweb="input"] {
-background-color: var(--surface-2) !important; border: 1px solid var(--surface-3) !important; border-radius: var(--r) !important;
-}
+[data-testid="stTextInput"] [data-baseweb="input"] { background-color: var(--surface-2) !important; border: 1px solid var(--surface-3) !important; border-radius: var(--r) !important; }
 [data-testid="stTextInput"] [data-baseweb="input"]:focus-within { border-color: var(--human) !important; }
 [data-testid="stTextInput"] input { color: var(--ink) !important; background-color: var(--surface-2) !important; padding: 0.75rem 0.875rem !important; font-size: var(--t-base) !important; }
 [data-testid="stTextInput"] label p { color: var(--ink-soft); font-size: var(--t-base); }
-
 .ritmo { background-color: var(--surface); border-radius: var(--r); padding: 1.75rem 2rem; margin-top: 2.5rem; }
 .stApp h2.ritmo-titulo { font-family: var(--font-ui) !important; font-size: var(--t-md) !important; font-weight: 600 !important; color: var(--ink) !important; margin: 0 0 0.25rem 0 !important; padding: 0 !important; letter-spacing: -0.01em; line-height: 1.3 !important; }
 .stApp p.ritmo-intro { font-size: var(--t-base); color: var(--ink-soft); margin: 0.25rem 0 1.5rem 0 !important; max-width: 70ch; line-height: 1.5; }
@@ -897,36 +833,28 @@ background-color: var(--surface-2) !important; border: 1px solid var(--surface-3
 .pendientes ul { margin: 0; padding-left: 1.1rem; }
 .pendientes li { color: var(--ink-soft); font-size: var(--t-base); line-height: 1.5; margin: 0 0 0.375rem 0; }
 .sin-pendientes { font-size: var(--t-base); color: var(--ink-soft); margin: 1.25rem 0 0 0; }
-
 .stApp h1.ingreso-marca { font-family: var(--font-ui) !important; font-size: var(--t-xl) !important; font-weight: 600 !important; letter-spacing: -0.04em; line-height: 0.95 !important; color: var(--ink) !important; margin: 1.5rem 0 0 0 !important; padding: 0 !important; overflow-wrap: break-word; min-width: 0; }
 .stApp p.ingreso-lead { font-size: var(--t-md); color: var(--ink-soft); line-height: 1.5; margin: 2rem 0 0 0 !important; max-width: 34ch; }
 .ingreso-espacio { height: 9vh; }
 .ingreso-form-titulo { font-size: var(--t-md); font-weight: 600; color: var(--ink); margin: 0 0 0.25rem 0; }
 .stApp p.ingreso-form-texto { font-size: var(--t-base); color: var(--ink-soft); margin: 0.25rem 0 1rem 0 !important; }
 .ingreso-form-pad { height: 9.5rem; }
-
 .pie { display: flex; justify-content: space-between; align-items: flex-end; gap: 2rem; flex-wrap: wrap; margin-top: 6rem; padding-top: 2rem; }
 .pie-aviso { font-size: var(--t-sm); color: var(--ink-soft); line-height: 1.55; max-width: 62ch; margin: 0; }
 .pie-firma { text-align: right; margin: 0; }
 .pie-firma p { font-size: var(--t-sm); color: var(--ink-soft); margin: 0; }
 .pie-firma .pie-autor { font-size: var(--t-base); color: var(--ink); font-weight: 500; }
-
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 @media (max-width: 1024px) {
 .st-key-paneles [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; row-gap: 2rem; }
-.st-key-paneles [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-flex: 1 1 100% !important; width: 100% !important; min-width: 100% !important;
-}
+.st-key-paneles [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex: 1 1 100% !important; width: 100% !important; min-width: 100% !important; }
 .st-key-botones [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; row-gap: 0; }
-.st-key-botones [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-min-width: 0 !important; width: auto !important; flex: 1 1 0 !important;
-}
+.st-key-botones [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { min-width: 0 !important; width: auto !important; flex: 1 1 0 !important; }
 .st-key-botones [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child { flex-grow: 3 !important; }
 .hoja { height: auto; min-height: 220px; max-height: 75vh; }
 .ritmo-fila { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 .ritmo svg { margin-top: 0.5rem; width: 100%; max-width: 640px; height: auto; }
 }
-
 @media (max-width: 768px) {
 .block-container { padding: 1.5rem 1rem 2rem 1rem !important; }
 .hoja { padding: 1.25rem 1.25rem; }
@@ -1090,14 +1018,14 @@ with st.sidebar:
                 MODELOS_RESUELTOS[pid] = [elegido] + [m for m in mods if m != elegido]
     # [MEJORA 0%] Modo profundo activado por defecto
     modo_profundo = st.toggle(
-        "🔥 Modo Profundo (Recomendado para 0% de detección)",
+        "🔥 Modo Profundo (Recomendado para 7-9% de detección)",
         value=True,
         help="Apagado: una sola llamada por bloque, mucho más rápido. "
              "Encendido: pasa el texto por el inglés y de vuelta, reordena la estructura y corrige dos veces "
              "(4 a 6 llamadas por bloque).",
     )
     pasadas = st.slider(
-        "Pasadas de humanización", 1, 3, 1,
+        "Pasadas de humanización", 1, 3, 2,
         help="Con 2, el resultado de la primera pasada vuelve a entrar al humanizador, igual que copiarlo y "
              "pegarlo de nuevo. Cada pasada extra suma más o menos el mismo tiempo que la primera.",
     )
@@ -1128,12 +1056,13 @@ with st.sidebar:
              "Es lo que más acerca el resultado a un texto escrito por ti.",
     ).strip()
     # [MEJORA 0%] Guía al usuario hacia los modelos correctos
-    with st.expander("⚙️ Configuración para lograr 0% de detección", expanded=True):
+    with st.expander("⚙️ Configuración para lograr 7-9% de detección", expanded=True):
         st.markdown(
-            "Para lograr el menor porcentaje posible en GPTZero/Copyleaks, sigue estos 3 pasos:\n\n"
+            "Para lograr entre 7% y 9% en GPTZero/Copyleaks, sigue estos 4 pasos:\n\n"
             "1. **Elige el modelo correcto**: En el menú superior, selecciona **OpenRouter** o **Groq** y elige un modelo como `llama-3.3-70b-instruct` o `qwen-2.5-72b-instruct`. Estos modelos tienen una 'huella' estadística que confunde a los detectores.\n"
             "2. **Activa el Modo Profundo**: Ya viene activado. La retrotraducción (ES→EN→ES) rompe la estructura sintáctica de la IA.\n"
-            "3. **Pega tu Muestra de Estilo**: Escribe 2 o 3 párrafos tuyos abajo. El modelo imitará tu entropía personal, que es lo que ningún detector puede predecir.\n\n"
+            "3. **Pega tu Muestra de Estilo**: Escribe 2 o 3 párrafos tuyos abajo. El modelo imitará tu entropía personal, que es lo que ningún detector puede predecir.\n"
+            "4. **Usa 2 pasadas**: Ya viene configurado. La segunda pasada refina el resultado.\n\n"
             "*Nota: Agrega tus API Keys en Settings → Secrets de Streamlit.*"
         )
     st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
@@ -1205,47 +1134,36 @@ Conserva todas las fechas, nombres, instituciones, cifras y citas tal cual.
 Devuelve ÚNICAMENTE el texto reestructurado, con los párrafos separados por una línea en blanco.
 """
 
+# [MEJORA 0%] PROMPT_FINAL basado en el estilo de la tesis de Manuel Valenzuela Saavedra (2003)
 PROMPT_FINAL = """
-Eres un historiador que escribe para una revista de divulgación seria: lenguaje directo y claro, cercano al que usa un buen profesor cuando explica en clase, sin perder la formalidad académica. Reescribe el borrador conservando todo su contenido, pero eliminando por completo la cadencia de IA y la estructura de "ensayo clásico".
-""" + REGLA_NO_RESUMIR + """
-ESTRUCTURA DE PÁRRAFOS: mantén la división en párrafos del borrador (no vuelvas a juntarlos).
-DESTRUYE EL "ENSAYO CLÁSICO" (OBLIGATORIO):
-A. PROHIBIDAS las fórmulas de importancia y grandeza. No uses ninguna de estas ni variantes parecidas:
-"se sitúa entre los episodios más...", "uno de los acontecimientos más...", "el conflicto fracturó profundamente...", "es un hito fundamental", "marcó un hito", "representa un testimonio", "constituye un testimonio", "un antes y un después", "dejó una huella imborrable", "sentó las bases", "no puede entenderse sin", "se erige como", "da cuenta de", "pone de manifiesto", "en el marco de", "a lo largo de la historia", "sin precedentes", "de gran relevancia", "de suma importancia", "trascendental", "es posible afirmar", "resulta evidente", "cabe mencionar", "asimismo", "no obstante", "por consiguiente", "en última instancia".
-B. EN VEZ DE ADJETIVOS DE IMPORTANCIA, MUESTRA EL HECHO: no digas que algo "fue fundamental" o "transformó profundamente"; di qué cambió, quién lo hizo, cuándo y qué pasó después.
-Mal: "La Revolución Francesa es un hito fundamental que fracturó profundamente la sociedad europea."
-Bien: "Después de 1789, en Francia ya no mandaba solo el rey. Los nobles perdieron sus privilegios y muchos huyeron al extranjero."
-Mal: "Este documento representa un testimonio de la lucha por los derechos."
-Bien: "El documento recoge lo que pedían los diputados del Tercer Estado: igualdad ante la ley y libertad de expresión."
-C. SUJETO Y VERBO CLAROS: prefiere "los diputados aprobaron" a "se produjo la aprobación por parte de los diputados". Evita la voz pasiva con "se" y las nominalizaciones (la implementación, la consolidación, la configuración).
-D. INICIOS DE ORACIÓN: menos de un tercio de las oraciones puede empezar con "El", "La", "Los", "Las" o "Se". Abre las demás con una fecha, un lugar, un nombre propio, un complemento, un verbo o una subordinada.
-E. CONECTORES SENCILLOS: usa "pero", "por eso", "así", "después", "entonces", "aun así", "en cambio". Nada de conectores de manual.
-REGLAS DE ESTILO (aplícalas sin acortar el texto):
-ENUMERACIONES: si el borrador enumera 3 o 4 elementos en una sola frase ("A, B, C y D"), repártelos en dos oraciones con verbos distintos. Todos los elementos se mantienen.
-NADA DE PARES SIMÉTRICOS AL CIERRE DE LAS ORACIONES ("...la política y la sociedad"): separa las ideas en frases con distinto verbo, sin perder ninguna.
-EXPRESIONES VETADAS (NO USES NINGUNA): "al tiempo que", "a esto se suma", "a su vez", "ante este panorama", "entre los que destacan", "cabe destacar", "es fundamental", "es crucial", "enfrenta un reto", "fomentar", "abordar", "mediante", "reside en", "en este sentido", "en este contexto", "por otro lado", "no solo... sino también", "juega un papel", "hoy en día", "cada vez más", "panorama", "paradigma", "potenciar", "integral", "clave para", "en conclusión", "en definitiva". Reemplázalas por una expresión común; no borres la idea que acompañan.
-CERO GERUNDIOS DE REMATE: no cierres una frase con coma + gerundio ("..., provocando..."). Usa punto seguido y un verbo conjugado.
-CIERRE SIN MORALEJA: si el último párrafo termina en una reflexión genérica, reescríbela como una afirmación concreta. No borres el párrafo de cierre.
-RITMO IRREGULAR: alterna sin patrón fijo frases cortas (4 a 8 palabras) con frases medianas y alguna larga (25 a 35 palabras) con un inciso natural entre comas.
-VOCABULARIO: prefiere la palabra común sobre la culta ("usar" en vez de "utilizar", "hacer" en vez de "llevar a cabo", "empezar" en vez de "iniciar").
-FORMATO: solo prosa en párrafos separados por una línea en blanco. Sin rayas largas (— o –), sin negritas, sin listas, sin títulos y sin comillas curvas.
-PUNTUACIÓN VARIADA: no todo es coma y punto. Usa alguna vez dos puntos, punto y coma, un paréntesis corto o una pregunta que el mismo texto responde, donde salga natural.
-PALABRA CONCRETA, NO LA PRIMERA QUE SALE: entre dos formas correctas de decir algo, elige la más específica y menos de plantilla ("los nobles vendieron sus tierras" en vez de "se produjeron cambios en la propiedad"). Repite una palabra si es la justa; no la cambies por un sinónimo solo para variar.
-SIN MOLDE FIJO: que los párrafos no sigan todos el mismo esquema (afirmación, explicación, consecuencia). Alguna oración puede empezar con "Y" o "Pero"; alguna puede ser una frase breve sin verbo. No redondees cada frase: un texto de persona tiene oraciones secas junto a otras más sueltas.
-CONECTORES AL INICIO: como máximo una oración de todo el texto puede abrir con "Además", "Sin embargo", "Por lo tanto", "Por ello", "De este modo", "Finalmente" o parecidos. Las demás entran directo con el sujeto o el hecho.
-IDIOMA: escribe todo en español. Ninguna palabra en chino, inglés ni otro idioma, salvo nombres propios y citas que ya vengan así en el texto.
-BURSTINESS (EXPLOSIVIDAD) EXTREMA: Esta es la regla más importante para evitar detectores. Alterna drásticamente entre oraciones ultra-cortas (3 a 6 palabras) y oraciones largas, complejas y con incisos (30 a 40 palabras). Nunca escribas tres oraciones seguidas de longitud similar. Rompe el ritmo musical de la IA.
-Devuelve ÚNICAMENTE el texto final en español, sin comentarios ni saludos.
+Reescribe el texto en español académico, imitando el estilo de una tesis universitaria chilena de principios de los 2000s.
+
+ESTILO OBJETIVO (analizado de una tesis real de 2003):
+- Vocabulario académico accesible: "prospectivamente", "antagónicos", "coyuntural", "tuición", "delineamientos", "emplazamiento"
+- Conectores formales pero naturales: "De acuerdo con lo anterior", "Por lo tanto", "Sin embargo", "De esta manera", "Por otro lado", "En este contexto", "De lo anterior se puede desprender", "Es así como"
+- Tono impersonal con "debemos"/"es necesario": "debemos necesariamente considerar", "es necesario comprender"
+- Citas entre paréntesis: "(Rossi, 1971)", "(Bernuolli, 1951)"
+- Oraciones largas con subordinadas: 25-35 palabras promedio
+- Estructura: introducción del concepto → desarrollo → conclusión parcial
+- Puntuación: muchas comas, pocos punto y coma, paréntesis para citas
+
+REGLAS ANTI-DETECTOR (obligatorias para bajar a 7-9%):
+1. BURSTINESS EXTREMA: alterna oraciones ultra-cortas (6-10 palabras) con oraciones largas y complejas (30-40 palabras). Nunca tres seguidas de largo similar.
+2. INICIOS VARIADOS: máximo 30% de oraciones pueden empezar con "El/La/Los/Las". Usa: verbos ("Resulta necesario..."), adverbios ("Tradicionalmente,..."), preposiciones ("En el contexto de..."), nombres propios, cifras.
+3. PROHIBIDO: "se caracterizó por", "a medida que", "supuso una transformación", "cuyas repercusiones", "¿Por qué estudiar esto? Porque...". Reemplaza con verbos concretos y acciones específicas.
+4. CERO MORALEJA FINAL: el último párrafo termina con un dato, una fecha, un nombre o una acción concreta. Nunca con "esto nos enseña", "permite entender", "es importante recordar".
+5. PUNTUACIÓN VARIADA: usa al menos 2 paréntesis (para citas), 1 punto y coma y 1 pregunta retórica en todo el texto.
+6. MEZCLA VOCABULARIO: 1 palabra coloquial cada 10 académicas. Ejemplo: "se armó un problema" en vez de "se generó una problemática".
+
+CONSERVA todas las fechas, nombres, cifras y lugares TAL CUAL. No resumas. No agregues información nueva.
+
+Devuelve SOLO el texto reescrito.
 """
 
 PROMPT_RAPIDO = PROMPT_FINAL.replace(
-    "ESTRUCTURA DE PÁRRAFOS: mantén la división en párrafos del borrador (no vuelvas a juntarlos).",
-    """ESTRUCTURA (hazlo en esta misma pasada):
-Reordena las ideas dentro de cada párrafo y cambia la construcción de cada oración; no sigas el orden de frases del original.
-Divide solo los párrafos más largos, por donde cambia la idea. Nunca dejes una sola oración por párrafo en todo el texto.
-Varía el largo de las oraciones de forma marcada: algunas de 4 a 8 palabras y otras de 25 a 35.
-No empieces los párrafos con una oración que los resume ni los cierres con una que concluye.""",
-).replace("Reescribe el borrador", "Reescribe el texto")
+    "ESTILO OBJETIVO (analizado de una tesis real de 2003):",
+    "ESTILO OBJETIVO (tesis chilena 2003, aplicado en esta misma pasada):",
+).replace("Reescribe el texto en español académico", "Reescribe el texto")
 
 PROMPT_CORRECCION = """
 Eres un corrector de estilo. Te paso el texto ORIGINAL, un TEXTO reescrito y una lista de PROBLEMAS detectados por una revisión automática.
