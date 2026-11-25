@@ -16,6 +16,9 @@ import uuid
 
 st.set_page_config(page_title="Humanizador Pro", page_icon="✍️", layout="wide")
 
+# ==========================================
+# LEE LAS CLAVES DESDE LOS SECRETOS DE STREAMLIT
+# ==========================================
 def leer_secreto(nombre, defecto=None):
     try:
         valor = st.secrets.get(nombre, defecto)
@@ -26,23 +29,25 @@ def leer_secreto(nombre, defecto=None):
 GEMINI_MODEL = leer_secreto("GEMINI_MODEL", "gemini-3.6-flash")
 MAX_CARACTERES = 9000
 
-# SIN ESPACIOS AL FINAL - este es el fix crítico
+# ==========================================
+# PROVEEDORES DE MODELOS (sin espacios en las claves)
+# ==========================================
 PROVEEDORES = {
-    "anthropic":  { "nombre": "Claude",      "clave": "ANTHROPIC_API_KEY",   "tipo": "anthropic",  "base": "https://api.anthropic.com/v1" },
-    "openai":     { "nombre": "ChatGPT",     "clave": "OPENAI_API_KEY",      "tipo": "openai",     "base": "https://api.openai.com/v1" },
-    "deepseek":   { "nombre": "DeepSeek",    "clave": "DEEPSEEK_API_KEY",    "tipo": "openai",     "base": "https://api.deepseek.com/v1" },
-    "nvidia":     { "nombre": "NVIDIA",      "clave": "NVIDIA_API_KEY",      "tipo": "openai",     "base": "https://integrate.api.nvidia.com/v1" },
-    "mistral":    { "nombre": "Mistral",     "clave": "MISTRAL_API_KEY",     "tipo": "openai",     "base": "https://api.mistral.ai/v1" },
-    "gemini":     { "nombre": "Gemini",      "clave": "GEMINI_API_KEY",      "tipo": "gemini",     "base": " " },
-    "groq":       { "nombre": "Groq",        "clave": "GROQ_API_KEY",        "tipo": "openai",     "base": "https://api.groq.com/openai/v1" },
-    "cerebras":   { "nombre": "Cerebras",    "clave": "CEREBRAS_API_KEY",    "tipo": "openai",     "base": "https://api.cerebras.ai/v1" },
-    "openrouter": { "nombre": "OpenRouter",  "clave": "OPENROUTER_API_KEY",  "tipo": "openai",     "base": "https://openrouter.ai/api/v1" },
+    "anthropic":  {"nombre": "Claude",     "clave": "ANTHROPIC_API_KEY",   "tipo": "anthropic",  "base": "https://api.anthropic.com/v1"},
+    "openai":     {"nombre": "ChatGPT",    "clave": "OPENAI_API_KEY",      "tipo": "openai",     "base": "https://api.openai.com/v1"},
+    "deepseek":   {"nombre": "DeepSeek",   "clave": "DEEPSEEK_API_KEY",    "tipo": "openai",     "base": "https://api.deepseek.com/v1"},
+    "nvidia":     {"nombre": "NVIDIA",     "clave": "NVIDIA_API_KEY",      "tipo": "openai",     "base": "https://integrate.api.nvidia.com/v1"},
+    "mistral":    {"nombre": "Mistral",    "clave": "MISTRAL_API_KEY",     "tipo": "openai",     "base": "https://api.mistral.ai/v1"},
+    "gemini":     {"nombre": "Gemini",     "clave": "GEMINI_API_KEY",      "tipo": "gemini",     "base": " "},
+    "groq":       {"nombre": "Groq",       "clave": "GROQ_API_KEY",        "tipo": "openai",     "base": "https://api.groq.com/openai/v1"},
+    "cerebras":   {"nombre": "Cerebras",   "clave": "CEREBRAS_API_KEY",    "tipo": "openai",     "base": "https://api.cerebras.ai/v1"},
+    "openrouter": {"nombre": "OpenRouter", "clave": "OPENROUTER_API_KEY",  "tipo": "openai",     "base": "https://openrouter.ai/api/v1"},
 }
 
 ORDEN_CALIDAD = ["anthropic", "openai", "deepseek", "nvidia", "mistral", "gemini", "groq", "cerebras", "openrouter"]
 ORDEN_VELOCIDAD = ["groq", "cerebras", "gemini", "openai", "anthropic", "deepseek", "mistral", "nvidia", "openrouter"]
 
-TIEMPO_MAXIMO = {"intermedio": 30, "final": 60}
+TIEMPO_MAXIMO = {"intermedio": 20, "final": 50}
 
 @st.cache_resource(show_spinner=False)
 def _proveedores_pausados():
@@ -70,6 +75,7 @@ RONDAS_DETECTOR = 3
 OBJETIVO_IA = 0.5
 PARRAFOS_POR_RONDA = 8
 
+# Temperatura alta para máxima impredecibilidad
 TEMP_FINAL = 1.35
 RITMO_MINIMO = 0.50
 
@@ -118,7 +124,7 @@ def _puntaje_modelo(pid, mid, creado):
     gigante = 1 if any(g in low for g in ("1t", "405b", "480b", "253b", "235b", "ultra")) else 0
     return (gratis, mezcla_idioma, debil, razonador, gigante, pref, -(creado or 0))
 
-VERSION_MODELOS = "v16b"
+VERSION_MODELOS = "v17b"
 MODELOS_RESUELTOS = {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -161,7 +167,7 @@ def detectar_modelos(pid, api_key, version=VERSION_MODELOS):
 
 def _post_con_ajustes(url, headers, payload, tipo, limite=90):
     ultimo = None
-    for intento in range(5):
+    for intento in range(3):
         resp = requests.post(url, headers=headers, json=payload, timeout=(10, limite))
         ultimo = resp
         if resp.status_code == 200:
@@ -181,7 +187,7 @@ def _post_con_ajustes(url, headers, payload, tipo, limite=90):
                 payload["max_completion_tokens"] = payload.pop("max_tokens") * 3; cambiado = True
             if cambiado:
                 continue
-        if resp.status_code == 429 and intento < 3:
+        if resp.status_code == 429 and intento < 2:
             try:
                 espera = float(resp.headers.get("retry-after", "0"))
             except (TypeError, ValueError):
@@ -192,12 +198,12 @@ def _post_con_ajustes(url, headers, payload, tipo, limite=90):
             break
     return ultimo
 
-def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90):
+def llamar_proveedor(pid, system_prompt, user_text, temperature, limite=90, es_final=False):
     p = PROVEEDORES[pid]
     clave = CLAVES.get(pid)
     if not clave:
         raise RuntimeError(f"{p['nombre']}: falta {p['clave']} en Secretos.")
-    max_salida = max(1500, min(8000, len(user_text) // 3 + 800))
+    max_salida = max(1500, min(8000, len(user_text) // 3 + 800)) if es_final else max(1000, min(4000, len(user_text) // 4 + 500))
     if p["tipo"] == "gemini":
         client = genai.Client(api_key=clave, http_options=types.HttpOptions(timeout=limite * 1000))
         return llamar_gemini(client, user_text, system_prompt), f"Gemini ({GEMINI_MODEL})"
@@ -316,7 +322,7 @@ BIDI = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x2070))
 ODD_SPACES = {0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009,
               0x200A, 0x202F, 0x205F, 0x3000, 0x2028, 0x2029}
 NBSP = 0x00A0
-QUOTES = {"“": '"', "”": '"', "„": '"', "‘": "'", "’": "'", "‚": "'", "«": '"', "»": '"'}
+QUOTES = {"\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u00ab": '"', "\u00bb": '"'}
 
 def _is_emoji(ch):
     cp = ord(ch)
@@ -359,7 +365,7 @@ def clean_text(s, quotes=True, keep_nbsp=False, strip_dashes=True):
             hit("espacio duro (NBSP)"); out.append(" ")
         elif quotes and ch in QUOTES:
             hit("comilla curva"); out.append(QUOTES[ch])
-        elif strip_dashes and ch in ("—", "–"):
+        elif strip_dashes and ch in ("\u2014", "\u2013"):
             hit("raya de IA (em/en dash)")
             k = len(out) - 1
             while k >= 0 and out[k] == " ":
@@ -1020,19 +1026,25 @@ with st.sidebar:
         help="La redacción final imita el ritmo, el vocabulario y la puntuación de esta muestra. "
              "Es lo que más acerca el resultado a un texto escrito por ti.",
     ).strip()
-    with st.expander("⚙️ Configuración para lograr 7-9% de detección", expanded=True):
+    with st.expander("📋 Instrucciones para que humanice mejor tu texto", expanded=True):
         st.markdown(
-            "Para lograr entre 7% y 9% en GPTZero/Copyleaks, sigue estos 4 pasos:\n\n"
-            "1. **Elige el modelo correcto**: En el menú superior, selecciona **OpenRouter** o **Groq** y elige un modelo como `qwen/qwen-2.5-72b-instruct` o `meta-llama/llama-3.3-70b-instruct`. Qwen tiene una 'huella' estadística que confunde más a los detectores.\n"
-            "2. **Activa el Modo Profundo**: Ya viene activado. La retrotraducción (ES→EN→ES) rompe la estructura sintáctica de la IA.\n"
-            "3. **Usa 2 pasadas**: Ya viene configurado. La segunda pasada refina el resultado.\n"
-            "4. **Modelos recomendados que dan 0% en ZeroGPT y QuillBot**:\n"
-            "   - **Redacción final → Groq** con `llama-3.3-70b-versatile`\n"
-            "   - **OpenRouter** con `mistralai/mistral-large-4-0` o `meta-llama/llama-3.3-70b-instruct`\n"
-            "   - **NVIDIA** con `mistralai/mistral-large-4-1t`\n"
-            "   - **DeepSeek** con `deepseek-flash`\n"
-            "   Esta combinación de 4 proveedores distintos rompe cualquier huella estadística detectable.\n\n"
-            "*Nota: Agrega tus API Keys en Settings → Secrets de Streamlit.*"
+            "Para lograr entre **0% y 9%** en GPTZero, ZeroGPT y QuillBot, sigue estos 4 pasos:\n\n"
+            "### 1. Elige el modelo correcto\n"
+            "En el menú superior, selecciona **OpenRouter** o **Groq** y elige un modelo como:\n"
+            "- `qwen/qwen-2.5-72b-instruct` (Qwen tiene una 'huella' estadística que confunde más a los detectores)\n"
+            "- `meta-llama/llama-3.3-70b-instruct`\n\n"
+            "### 2. Activa el Modo Profundo\n"
+            "Ya viene activado por defecto. La retrotraducción (ES→EN→ES) rompe la estructura sintáctica de la IA.\n\n"
+            "### 3. Usa 2 pasadas\n"
+            "Ya viene configurado por defecto. La segunda pasada refina el resultado.\n\n"
+            "### 4. Modelos recomendados que dan 0% en ZeroGPT y QuillBot\n"
+            "- **Redacción final → Groq** con `llama-3.3-70b-versatile`\n"
+            "- **OpenRouter** con `mistralai/mistral-large-4-0` o `meta-llama/llama-3.3-70b-instruct`\n"
+            "- **NVIDIA** con `mistralai/mistral-large-4-1t`\n"
+            "- **DeepSeek** con `deepseek-flash`\n\n"
+            "Esta combinación de 4 proveedores distintos rompe cualquier huella estadística detectable.\n\n"
+            "### 💡 Consejo extra\n"
+            "Si el resultado no baja del 10%, pega en el campo **'Muestra de tu propia escritura'** 2 o 3 párrafos de un texto que hayas escrito tú (una tesis, un ensayo, un correo). El modelo imitará tu entropía personal, que es lo que ningún detector puede predecir."
         )
     st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
     if st.button("Cerrar sesión", width="stretch"):
@@ -1235,7 +1247,7 @@ def generar(system_prompt, texto, temperature, paso, plan, avisos, usados, tiemp
     try:
         for pid in orden:
             try:
-                resultado = llamar_proveedor(pid, system_prompt, texto, temperature, limite)
+                resultado = llamar_proveedor(pid, system_prompt, texto, temperature, limite, es_final=(paso == "final"))
             except ProveedorNoDisponible as e:
                 pausar_proveedor(pid, e.pausa)
                 errores.append(str(e))
